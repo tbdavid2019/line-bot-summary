@@ -9,7 +9,13 @@ from src.news.extract_news import extract_news
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, StickerMessage
+# 必須導入 ImageSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, StickerMessage, ImageSendMessage
+
+from playwright.sync_api import sync_playwright  # 新增部分
+import boto3
+from botocore.exceptions import NoCredentialsError
+import uuid
 
 
 # LINE keys
@@ -37,6 +43,63 @@ chat_chain = build_chat_chain(openai_api_key, max_token_limit, temperature)
 news_chain = build_news_chain(openai_api_key, max_token_limit, temperature)
 
 
+# 從環境變量中讀取 AWS S3 和 CloudFront 設置
+AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY')
+AWS_SECRET_KEY = os.getenv('AWS_SECRET_KEY')
+BUCKET_NAME = os.getenv('BUCKET_NAME')
+S3_REGION = os.getenv('S3_REGION')
+CLOUDFRONT_DOMAIN = os.getenv('CLOUDFRONT_DOMAIN')
+# 截圖功能開關
+ENABLE_SCREENSHOT = os.getenv('ENABLE_SCREENSHOT', 'false').lower() == 'true'
+
+
+def upload_to_s3(file_path):
+    if not ENABLE_SCREENSHOT:
+        return None
+
+    # 生成唯一文件名
+    unique_filename = f"screenshots/{uuid.uuid4()}.png"
+    
+    # 設置 S3 客戶端
+    s3 = boto3.client('s3', aws_access_key_id=AWS_ACCESS_KEY,
+                      aws_secret_access_key=AWS_SECRET_KEY, region_name=S3_REGION)
+
+    try:
+        # 上傳文件至 S3，不設置 ACL
+        s3.upload_file(file_path, BUCKET_NAME, unique_filename)
+        
+        # 生成通過 CloudFront 訪問的 URL
+        file_url = f"{CLOUDFRONT_DOMAIN}/{unique_filename}"
+        return file_url
+    except FileNotFoundError:
+        print("The file was not found")
+        return None
+    except NoCredentialsError:
+        print("Credentials not available")
+        return None
+
+
+
+# 用於截圖的功能
+def capture_screenshot(url):
+    if not ENABLE_SCREENSHOT:
+        return None
+
+    # 用 Playwright 進行截圖
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        
+        # 增加超時時間到 60 秒
+        page.goto(url, timeout=60000, wait_until="load")
+        
+        screenshot_path = f"/tmp/screenshot-{uuid.uuid4()}.png"  # 保存到本地
+        page.screenshot(path=screenshot_path)
+        browser.close()
+    
+    # 上傳至 S3 並返回 CloudFront 的 URL
+    return upload_to_s3(screenshot_path)
+
 @app.route("/callback", methods=['POST'])
 def callback():
     # get X-Line-Signature header value
@@ -63,7 +126,7 @@ def handle_text_message(event):
 
     # user's message history in MongoDB
     mongodb_message_history = MongoDBChatMessageHistory(
-    connection_string=mongo_connection_str, session_id="main", collection_name=user_id
+        connection_string=mongo_connection_str, session_id="main", collection_name=user_id
     )
 
     try:
@@ -86,15 +149,32 @@ def handle_text_message(event):
                 # Find the first URL in the message
                 url = url_regex.search(msg).group()
 
+                # 如果截圖功能開啟，則截取頁面並上傳到 S3
+                image_url = None
+                if ENABLE_SCREENSHOT:
+                    image_url = capture_screenshot(url)
+
                 # extract news 
                 news = extract_news(url)
-                # print(f"{news}")
-                
                 # push message to tell user the bot is reading
                 line_bot_api.push_message(user_id, TextSendMessage(text="收到！正在閱讀中..."))
 
-                # generate chain response
-                reply = chain_response(news_chain, mongodb_message_history, news)                        
+                # 生成回應
+                reply = chain_response(news_chain, mongodb_message_history, news)
+                
+                # 發送圖片訊息給用戶
+                if image_url:
+                    line_bot_api.push_message(user_id, TextSendMessage(text="這是該頁面的截圖："))
+                    line_bot_api.push_message(
+                        user_id,
+                        ImageSendMessage(
+                            original_content_url=image_url,
+                            preview_image_url=image_url
+                        )
+                    )
+                else:
+                    line_bot_api.push_message(user_id, TextSendMessage(text="無法生成截圖，請稍後再試。"))                      
+
             # normal conversation
             else:
                 # generate chain response
@@ -111,7 +191,7 @@ def handle_text_message(event):
     except Exception as e:
         # can't find news error
         error_msg = str(e)
-        if error_msg=="找不到報導":
+        if error_msg == "找不到報導":
             reply = "抱歉😅 目前還不支援這個網站。🔧\n\n此外，你也可以直接輸入報導內容，輸入格式為:\n\n標題：\n[報導標題]\n\n內文：\n[報導內文]"
         else:
             reply = error_msg
@@ -119,6 +199,7 @@ def handle_text_message(event):
     # send reply to user 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
+    
 # handle sticker message
 @handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker_message(event):

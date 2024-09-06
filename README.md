@@ -1,4 +1,10 @@
+- 新增 playwright截圖功能
+- 上載圖片到 aws s3 配合 cloudfront 
+
+
+
 本專案 fork 自 https://github.com/Achiwilms/LINE-NEWS-Bot
+
 
 
 # LINE-NEWS-Bot
