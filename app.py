@@ -1,24 +1,16 @@
-import os, re, openai
-from langchain.memory import MongoDBChatMessageHistory
-from src.build_ChatChain import build_chat_chain
-from src.build_NewsChain import build_news_chain
-from src.chain_response import chain_response
-from src.history.clear_history import clear_history
-from src.news.extract_news import extract_news
-
+import os, re, openai, requests
+import trafilatura
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, StickerMessage
-
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from bs4 import BeautifulSoup  # 使用 BeautifulSoup 來提取標題
 
 # LINE keys
 line_bot_api = LineBotApi(os.getenv('CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('CHANNEL_SECRET'))
 # OpenAI api key
 openai_api_key = os.getenv('OPENAI_API_KEY')
-# MongoDB connection string
-mongo_connection_str = os.getenv('MONGO_CONNECTION_STR')
 # max token limit for buffer
 max_token_limit = int(os.getenv('MAX_TOKEN_LIMIT'))
 # temperature
@@ -30,11 +22,48 @@ app = Flask(__name__)
 # Define the pattern
 url_regex = re.compile(r'https?://\S+')
 
-# build chat chain
-chat_chain = build_chat_chain(openai_api_key, max_token_limit, temperature)
+def chain_response(system_messages, text, openai_api_key, model="gpt-4o-mini"):
+    """
+    調用 OpenAI API，根據 system_messages 和 text 生成摘要。
+    """
+    headers = {
+        "Authorization": f"Bearer {openai_api_key}",
+        "Content-Type": "application/json",
+    }
 
-# build news chain
-news_chain = build_news_chain(openai_api_key, max_token_limit, temperature)
+    data = {
+        "model": model,
+        "messages": system_messages + [{"role": "user", "content": text}],
+        "max_tokens": 1000,
+        "temperature": 0.7,
+    }
+
+    try:
+        response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data)
+        response.raise_for_status()  # 檢查 API 回應是否有錯誤
+        reply = response.json()["choices"][0]["message"]["content"].strip()
+        return reply
+    except requests.exceptions.RequestException as e:
+        return f"API 請求發生錯誤: {str(e)}"
+
+def scrape_text_from_url(url):
+    """ 使用 trafilatura 從 URL 抓取網站內容，並返回標題和內容 """
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if downloaded is None:
+            return "無法提取此網頁的內容。", None
+        
+        # 提取頁面內容
+        content = trafilatura.extract(downloaded, include_formatting=True)
+        
+        # 使用 BeautifulSoup 提取標題
+        soup = BeautifulSoup(downloaded, 'html.parser')
+        title = soup.title.string if soup.title else "無法獲取標題"
+        
+        return content.strip(), title
+    except Exception as e:
+        print(f"抓取失敗: {e}")
+        return "抓取過程中發生錯誤。", None
 
 
 @app.route("/callback", methods=['POST'])
@@ -61,89 +90,45 @@ def handle_text_message(event):
     # message
     msg = event.message.text.strip()
 
-    # user's message history in MongoDB
-    mongodb_message_history = MongoDBChatMessageHistory(
-    connection_string=mongo_connection_str, session_id="main", collection_name=user_id
-    )
-
     try:
-        # request to clear message history
-        if (msg == "開啟新對話"):
-            # clear history
-            clear_history(mongodb_message_history)
-            reply = "對話歷史清除完畢，新對話已開始😎"
-        # manually input news
-        elif (msg.startswith("標題：") or msg.startswith("標題:")):
-            # generate chain response
-            reply = chain_response(news_chain, mongodb_message_history, msg[3:].strip())
-        # conversation
-        else:
-            # if the string contains a URL
-            if url_regex.search(msg):
-                # clear history (since it's a new url, very possible a new conversation)
-                clear_history(mongodb_message_history)
+        # 如果輸入的是 URL
+        if url_regex.search(msg):
+            # 找到第一個 URL
+            url = url_regex.search(msg).group()
 
-                # Find the first URL in the message
-                url = url_regex.search(msg).group()
-
-                # extract news 
-                news = extract_news(url)
-                # print(f"{news}")
-                
-                # push message to tell user the bot is reading
-                line_bot_api.push_message(user_id, TextSendMessage(text="收到！正在閱讀中..."))
-
-                # generate chain response
-                reply = chain_response(news_chain, mongodb_message_history, news)                        
-            # normal conversation
-            else:
-                # generate chain response
-                reply = chain_response(chat_chain, mongodb_message_history, msg)
-
-    # openai error
-    except openai.error.InvalidRequestError as e:
-        error_msg = str(e)
-        if (error_msg.startswith("This model's maximum context length is 4097 tokens")):
-            reply = '抱歉😅 閱讀過程中發生錯誤，原因可能是:\n1.對話與報導內容過長，請輸入"開啟新對話"後重試\n2.目前還不支援這個網站。🔧\n\n此外，你也可以直接輸入報導內容，輸入格式為:\n\n標題：\n[報導標題]\n\n內文：\n[報導內文]'
-        else: 
-            reply = error_msg
+            # 使用 trafilatura 抓取網頁內容及標題
+            text, title = scrape_text_from_url(url)
             
-    except Exception as e:
-        # can't find news error
-        error_msg = str(e)
-        if error_msg=="找不到報導":
-            reply = "抱歉😅 目前還不支援這個網站。🔧\n\n此外，你也可以直接輸入報導內容，輸入格式為:\n\n標題：\n[報導標題]\n\n內文：\n[報導內文]"
+            if text == "無法提取此網頁的內容。":
+                reply = text
+            else:
+                # 推送一個信息告知用戶
+                line_bot_api.push_message(user_id, TextSendMessage(text="收到！正在閱讀報導中..."))
+
+                # 使用 GPT 模型生成摘要，這裡傳遞模型名稱
+                system_messages = [
+                    {"role": "system", "content": "將以下原文總結為五個部分：1.總結 (Overall Summary)：約100字~300字概括。2.觀點 (Viewpoints):內容中的看法與你的看法。3.摘要 (Abstract)： 創建6到10個帶有適當表情符號的重點摘要。4.關鍵字 (Key Words)：列出內容中重點關鍵字。 5.容易懂(Easy Know)：一個讓十二歲青少年可以看得懂的段落。確保生成的文字都是繁體中文為主"}
+                ]
+
+                # 呼叫 GPT 生成摘要，指定使用的模型
+                summary = chain_response(system_messages, text, openai_api_key, model="gpt-4o-mini")
+                
+                # 將原始URL附加到摘要中，並附加標題
+                summary_with_original = f"【標題】: {title}\n\n{summary}\n\n[Original] {url}"
+
+                # 將最終結果回覆給用戶
+                reply = summary_with_original
+        
+        # 如果輸入的不是 URL
         else:
-            reply = error_msg
+            # 給用戶回應引導他們輸入 URL
+            reply = "我是 Oli 江家機器人二號機 \n專長是 < 濃縮重點 >\n請貼上 \n- 網址URL"
 
-    # send reply to user 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+    except Exception as e:
+        # 處理可能的錯誤
+        reply = f"發生錯誤: {str(e)}"
 
-# handle sticker message
-@handler.add(MessageEvent, message=StickerMessage)
-def handle_sticker_message(event):
-    # user ID
-    user_id = event.source.user_id
-    # message log 
-    print(f'{user_id}: has a message')
-    print(event.message['keywords'])
-    print(type(event.message['keywords']))
-
-    # sticker has keywords
-    if event.message['keywords'] is not None:
-        # take the first sticker keyword as message
-        msg = "我感到" + ', '.join([keyword for keyword in event.message['keywords']])
-        # user's message history in MongoDB
-        mongodb_message_history = MongoDBChatMessageHistory(
-        connection_string=mongo_connection_str, session_id="main", collection_name=user_id
-        )
-        # generate reply
-        reply = chain_response(chat_chain, mongodb_message_history, msg)
-    # sticker doesn't have keywords
-    else:
-        reply = "抱歉，我看不懂這個貼圖😅 能傳別的貼圖嗎?"
-    
-    # send reply to user
+    # 將回應發送給用戶
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 # make url discoverable
