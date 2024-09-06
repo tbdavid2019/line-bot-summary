@@ -11,7 +11,7 @@ from langchain.memory import ConversationTokenBufferMemory
 
 def build_news_chain(openai_api_key, max_token_limit, temperature):
     # LLM 
-    llm = ChatOpenAI(openai_api_key=openai_api_key, model_name = "gpt-4o", temperature=temperature)
+    llm = ChatOpenAI(openai_api_key=openai_api_key, model_name = "gpt-3.5-turbo", temperature=temperature)
 
     # system message prompt
     system_message_prompt = SystemMessagePromptTemplate(
