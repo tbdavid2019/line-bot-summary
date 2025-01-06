@@ -25,7 +25,7 @@ whisper_api_key = os.getenv('WHISPER_API_KEY')
 
 # 正則表達式
 url_regex = re.compile(r'https?://\S+')
-youtube_regex = re.compile(r'(https?://)?(www\.)?(youtube\.com|youtu\.be)')
+youtube_regex = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)')
 
 # 自然語言摘要提示詞
 def get_summary_prompt():
@@ -55,7 +55,6 @@ def chain_response(system_messages, text, base_url, api_key, model="gpt-4"):
         "max_tokens": 8000,
         "temperature": 0.5,
     }
-
     try:
         response = requests.post(base_url, headers=headers, json=data)
         response.raise_for_status()
@@ -82,7 +81,9 @@ def scrape_text_from_url(url):
 # 使用 yt-dlp 提取字幕或音訊
 def process_youtube_video(youtube_url):
     try:
-        print(f"Processing YouTube URL: {youtube_url}")
+        print(f"Starting to process YouTube URL: {youtube_url}")
+        print(f"URL type: {type(youtube_url)}")
+        
         # 嘗試下載字幕
         ydl_opts = {
             'writesubtitles': True,
@@ -101,12 +102,14 @@ def process_youtube_video(youtube_url):
                 if os.path.exists(subtitle_path):
                     print(f"Found subtitles: {subtitle_path}")
                     with open(subtitle_path, 'r', encoding='utf-8') as file:
-                        return file.read()
-
+                        subtitle_content = file.read()
+                    # 清理字幕文件
+                    os.remove(subtitle_path)
+                    return subtitle_content
+                    
         # 如果無字幕，下載音頻並進行轉錄
         print("No subtitles found, falling back to audio transcription.")
         return audio_transcription(youtube_url)
-
     except Exception as e:
         error_message = f"影片處理失敗: {str(e)}"
         print(error_message)
@@ -116,40 +119,45 @@ def process_youtube_video(youtube_url):
 def audio_transcription(youtube_url):
     try:
         print(f"Starting audio transcription for: {youtube_url}")
+        audio_file_path = f'/tmp/{str(uuid.uuid4())}'
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': f'/tmp/{str(uuid.uuid4())}.%(ext)s',
-            'ffmpeg_location': '/usr/bin/ffmpeg',
+            'outtmpl': f'{audio_file_path}.%(ext)s',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'ffprobe_location': '/usr/bin/ffprobe'
         }
-
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=True)
-            output_path = ydl.prepare_filename(info)
-            output_path = output_path.replace(os.path.splitext(output_path)[1], ".mp3")
+            audio_file = f"{audio_file_path}.mp3"
+            
+            if not os.path.exists(audio_file):
+                error_message = "音頻文件未生成，請檢查下載過程。"
+                print(error_message)
+                return error_message
+                
+            print(f"Audio file downloaded: {audio_file}")
+            
+            with open(audio_file, 'rb') as f:
+                files = {
+                    'file': ('audio.mp3', f, 'audio/mpeg'),
+                    'model': (None, 'whisper-1')
+                }
+                headers = {
+                    "Authorization": f"Bearer {whisper_api_key}"
+                }
+                response = requests.post(whisper_base_url, headers=headers, files=files)
+                response.raise_for_status()
+                transcript = response.json().get("text", "無法獲取轉錄內容")
+                print("Transcription successful.")
 
-        # 檢查音頻文件是否存在
-        if not os.path.exists(output_path):
-            error_message = "音頻文件未生成，請檢查下載過程。"
-            print(error_message)
-            return error_message
-
-        print(f"Audio file downloaded: {output_path}")
-        with open(output_path, 'rb') as audio_file:
-            headers = {"Authorization": f"Bearer {whisper_api_key}"}
-            files = {"file": audio_file, "model": "whisper-1"}
-            response = requests.post(whisper_base_url, headers=headers, files=files)
-            response.raise_for_status()
-            transcript = response.json().get("text", "無法獲取轉錄內容")
-            print("Transcription successful.")
-        os.remove(output_path)  # 刪除音頻文件
-        return transcript
-
+            # 清理音頻文件
+            os.remove(audio_file)
+            return transcript
+            
     except Exception as e:
         error_message = f"音頻轉錄失敗: {str(e)}"
         print(error_message)
@@ -161,7 +169,6 @@ def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
-
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -172,10 +179,14 @@ def callback():
 def handle_text_message(event):
     user_id = event.source.user_id
     msg = event.message.text.strip()
-
     try:
-        if youtube_regex.search(msg):
-            youtube_url = youtube_regex.search(msg).group()
+        print(f"Received message: {msg}")
+        
+        match = youtube_regex.search(msg)
+        if match:
+            youtube_url = match.group(0)
+            print(f"Extracted YouTube URL: {youtube_url}")
+            
             transcription = process_youtube_video(youtube_url)
             if transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成"):
                 reply = transcription
@@ -196,7 +207,7 @@ def handle_text_message(event):
             reply = "請提供有效的 YouTube 影片連結或普通網頁網址，我將為您生成摘要！"
     except Exception as e:
         reply = f"發生錯誤: {str(e)}"
-
+        
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 if __name__ == "__main__":
