@@ -45,7 +45,7 @@ def get_summary_prompt():
     ]
 
 # 使用 LLM 生成摘要
-def chain_response(system_messages, text, base_url, api_key, model="gpt-4"):
+def chain_response(system_messages, text, base_url, api_key, model="gpt-4o"):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -53,7 +53,7 @@ def chain_response(system_messages, text, base_url, api_key, model="gpt-4"):
     data = {
         "model": model,
         "messages": system_messages + [{"role": "user", "content": text}],
-        "max_tokens": 8000,
+        "max_tokens": 10000,
         "temperature": 0.5,
     }
     try:
