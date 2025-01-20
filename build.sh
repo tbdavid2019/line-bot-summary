@@ -11,10 +11,14 @@ docker image prune -f
 
 # Step 3: 建立新的 Docker image
 echo "Building new Docker image..."
-docker build -t line-bot-summary .
+sudo docker build -t line-bot-summary .
 
 # Step 4: 啟動新的容器
 echo "Starting new container..."
 docker run -dp 8111:5000 --env-file .env --name line-bot-summary123 line-bot-summary
 
 echo "Container restarted and old images cleaned up successfully!"
+
+
+sudo docker build -t line-bot-summary .
+sudo docker run -dp 8111:5000 --env-file .env --name line-bot-summary123 line-bot-summary
