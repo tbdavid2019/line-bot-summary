@@ -21,6 +21,8 @@ handler = WebhookHandler(os.getenv('CHANNEL_SECRET'))
 # API 配置
 llm_base_url = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1/chat/completions')
 llm_api_key = os.getenv('LLM_API_KEY')
+llm_model = os.getenv('LLM_MODEL', 'gemini-2.0-flash')
+llm_max_tokens = int(os.getenv('MAX_TOKEN_LIMIT', '900000'))
 whisper_base_url = os.getenv('WHISPER_BASE_URL', 'https://api.openai.com/v1/audio/transcriptions')
 whisper_api_key = os.getenv('WHISPER_API_KEY')
 
@@ -45,7 +47,7 @@ def get_summary_prompt():
     ]
 
 # 使用 LLM 生成摘要
-def chain_response(system_messages, text, base_url, api_key, model="gpt-4o"):
+def chain_response(system_messages, text, base_url, api_key, model, max_tokens):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -53,15 +55,21 @@ def chain_response(system_messages, text, base_url, api_key, model="gpt-4o"):
     data = {
         "model": model,
         "messages": system_messages + [{"role": "user", "content": text}],
-        "max_tokens": 10000,
+        "max_tokens": max_tokens,
         "temperature": 0.5,
     }
     try:
-        response = requests.post(base_url, headers=headers, json=data)
+        response = requests.post(base_url, headers=headers, json=data, timeout=60)
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        try:
+            result = response.json()
+            return result["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            return f"API 回傳格式錯誤: {str(e)}\n原始回應: {response.text}"
+    except requests.exceptions.Timeout:
+        return "API 請求逾時，請稍後再試。"
     except requests.exceptions.RequestException as e:
-        return f"API 請求發生錯誤: {str(e)}"
+        return f"API 請求發生錯誤: {str(e)}\n原始回應: {getattr(e.response, 'text', '')}"
 
 # 從普通網頁抓取內容
 def scrape_text_from_url(url):
@@ -195,7 +203,7 @@ def handle_text_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             else:
                 system_messages = get_summary_prompt()
-                summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key)
+                summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
                 full_reply = f"【YouTube 影片摘要】\n\n{summary}"
                 send_chunked_reply(event.reply_token, user_id, full_reply)
         elif url_regex.search(msg):
@@ -206,7 +214,7 @@ def handle_text_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             else:
                 system_messages = get_summary_prompt()
-                summary = chain_response(system_messages, content, llm_base_url, llm_api_key)
+                summary = chain_response(system_messages, content, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
                 full_reply = f"【標題】: {title}\n\n{summary}"
                 send_chunked_reply(event.reply_token, user_id, full_reply)
         else:
