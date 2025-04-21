@@ -109,7 +109,11 @@ def process_youtube_video(youtube_url):
                     os.remove(subtitle_path)
                     return subtitle_content
                     
+<<<<<<< HEAD
         # 如果無字幕,下載音頻並進行轉錄
+=======
+        # 如果無字幕，下載音頻並進行轉錄
+>>>>>>> 51d79f7bcefc72b3a9613eab39ebf4d51ec790ff
         print("No subtitles found, falling back to audio transcription.")
         return audio_transcription(youtube_url)
     except Exception as e:
@@ -129,9 +133,12 @@ def audio_transcription(youtube_url):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
+<<<<<<< HEAD
             'ffmpeg_location': '/usr/bin/ffmpeg',
             'ffprobe_location': '/usr/bin/ffprobe',
-            'cookiesfile': '/app/cookies.txt'  # 加入 cookies 支援
+            'cookiesfile': 'cookies.txt'  # 加入 cookies 支援
+=======
+>>>>>>> 51d79f7bcefc72b3a9613eab39ebf4d51ec790ff
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -139,7 +146,11 @@ def audio_transcription(youtube_url):
             audio_file = f"{audio_file_path}.mp3"
             
             if not os.path.exists(audio_file):
+<<<<<<< HEAD
                 error_message = "音頻文件未生成,請檢查下載過程。"
+=======
+                error_message = "音頻文件未生成，請檢查下載過程。"
+>>>>>>> 51d79f7bcefc72b3a9613eab39ebf4d51ec790ff
                 print(error_message)
                 return error_message
                 
@@ -185,60 +196,34 @@ def handle_text_message(event):
     msg = event.message.text.strip()
     try:
         print(f"Received message: {msg}")
+        
         match = youtube_regex.search(msg)
         if match:
             youtube_url = match.group(0)
             print(f"Extracted YouTube URL: {youtube_url}")
+            
             transcription = process_youtube_video(youtube_url)
             if transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成"):
                 reply = transcription
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             else:
                 system_messages = get_summary_prompt()
                 summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key)
-                full_reply = f"【YouTube 影片摘要】\n\n{summary}"
-                send_chunked_reply(event.reply_token, user_id, full_reply)
+                reply = f"【YouTube 影片摘要】\n\n{summary}"
         elif url_regex.search(msg):
             url = url_regex.search(msg).group()
             content, title = scrape_text_from_url(url)
             if content == "無法提取此網頁的內容。":
                 reply = content
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             else:
                 system_messages = get_summary_prompt()
                 summary = chain_response(system_messages, content, llm_base_url, llm_api_key)
-                full_reply = f"【標題】: {title}\n\n{summary}"
-                send_chunked_reply(event.reply_token, user_id, full_reply)
+                reply = f"【標題】: {title}\n\n{summary}"
         else:
             reply = "請提供有效的 YouTube 影片連結或普通網頁網址，我將為您生成摘要！"
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
     except Exception as e:
         reply = f"發生錯誤: {str(e)}"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-
-def send_chunked_reply(reply_token, user_id, text):
-    """
-    將長文本分段發送，確保每段不超過 LINE 的字元限制
-    """
-    MAX_CHAR_LENGTH = 2000  # LINE 的字元限制
-    
-    # 如果文本長度小於最大限制，直接發送
-    if len(text) <= MAX_CHAR_LENGTH:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=text))
-        return
-    
-    chunks = []
-    for i in range(0, len(text), MAX_CHAR_LENGTH):
-        chunk = text[i:i + MAX_CHAR_LENGTH]
-        # 為每個分段添加頁碼（除了第一頁）
-        if i > 0:
-            chunk = f"【續 {i//MAX_CHAR_LENGTH + 1}】\n{chunk}"
-        chunks.append(chunk)
-    
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=chunks[0]))
-    
-    for chunk in chunks[1:]:
-        line_bot_api.push_message(user_id, TextSendMessage(text=chunk))
+        
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 if __name__ == "__main__":
     port = int(os.getenv('PORT', 5000))
