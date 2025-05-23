@@ -40,7 +40,7 @@ def get_summary_prompt():
                 "❶ 總結 (Overall Summary)：撰寫約300字或更多，概括內容的主要議題與結論，語氣務實但易於理解。\n"
                 "❷ 觀點 (Viewpoints)：列出原文中提到的3~7個主要觀點，並適當補充您對這些觀點的評論或看法，條列呈現。\n"
                 "❸ 摘要 (Abstract)：摘錄6到10個核心重點，簡潔有力，並適當搭配表情符號（如✅、⚠️、📌）凸顯關鍵信息。\n"
-                "❹ 關鍵字 (Key Words)：列出4~8個最重要的關鍵字，避免冗長描述。\n"
+                "❹ 測驗 (Quiz)：根據內容產出**三題選擇題**，每題有 A、B、C、D 四個選項，並在每題後附上正確答案及簡短解釋。題目應涵蓋內容的重要概念或關鍵知識點。\n"
                 "❺ 容易懂 (Easy Know)：使用淺顯易懂的語言，將內容濃縮成一段約80~120字的解釋，適合十二歲孩子理解。\n"
             )
         }
@@ -105,7 +105,10 @@ def process_youtube_video(youtube_url):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
             video_id = info['id']
+            video_title = info.get('title', '無法獲取標題')
             print(f"Video ID: {video_id}")
+            print(f"Video Title: {video_title}")
+            
             for lang in ['zh-Hant', 'zh-TW', 'en']:
                 subtitle_path = f"/tmp/{video_id}.{lang}.vtt"
                 print(f"Checking for subtitles at {subtitle_path}")
@@ -115,15 +118,16 @@ def process_youtube_video(youtube_url):
                         subtitle_content = file.read()
                     # 清理字幕文件
                     os.remove(subtitle_path)
-                    return subtitle_content
+                    return subtitle_content, video_title
                     
         # 如果無字幕,下載音頻並進行轉錄
         print("No subtitles found, falling back to audio transcription.")
-        return audio_transcription(youtube_url)
+        transcription = audio_transcription(youtube_url)
+        return transcription, video_title
     except Exception as e:
         error_message = f"影片處理失敗: {str(e)}"
         print(error_message)
-        return error_message
+        return error_message, None
 
 def audio_transcription(youtube_url):
     try:
@@ -139,7 +143,7 @@ def audio_transcription(youtube_url):
             }],
             'ffmpeg_location': '/usr/bin/ffmpeg',
             'ffprobe_location': '/usr/bin/ffprobe',
-            'cookiesfile': '/app/cookies.txt'  # 加入 cookies 支援
+            'cookiesfile': 'cookies.txt'  # 加入 cookies 支援
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -197,14 +201,15 @@ def handle_text_message(event):
         if match:
             youtube_url = match.group(0)
             print(f"Extracted YouTube URL: {youtube_url}")
-            transcription = process_youtube_video(youtube_url)
-            if transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成"):
+            transcription, video_title = process_youtube_video(youtube_url)
+            if transcription and (transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成")):
                 reply = transcription
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             else:
                 system_messages = get_summary_prompt()
                 summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
-                full_reply = f"【YouTube 影片摘要】\n\n{summary}"
+                title_display = f"【{video_title}】" if video_title else "【YouTube 影片摘要】"
+                full_reply = f"{title_display}\n\n{summary}"
                 send_chunked_reply(event.reply_token, user_id, full_reply)
         elif url_regex.search(msg):
             url = url_regex.search(msg).group()
