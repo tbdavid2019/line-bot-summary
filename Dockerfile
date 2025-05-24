@@ -20,4 +20,4 @@ EXPOSE 5000
 ENV NAME=World
 
 # Run app.py when the container launches
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "--timeout", "120", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "--timeout", "300", "--workers", "1", "--worker-class", "sync", "--max-requests", "100", "--max-requests-jitter", "10", "app:app"]
