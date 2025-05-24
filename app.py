@@ -130,18 +130,18 @@ def process_youtube_video(youtube_url):
         return error_message, None
 
 def audio_transcription(youtube_url):
+    """下載完整音頻，檢查大小，如果超過25MB則分段發送給Whisper API"""
     audio_file = None
-    segment_files = []
     try:
         print(f"Starting audio transcription for: {youtube_url}")
         audio_file_path = f'/tmp/{str(uuid.uuid4())}'
         ydl_opts = {
-            'format': 'worstaudio/worst',  # 使用最低質量音頻節省內存
+            'format': 'bestaudio/best',  # 使用最佳音頻質量
             'outtmpl': f'{audio_file_path}.%(ext)s',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '64',  # 降低音頻質量節省內存
+                'preferredquality': '192',
             }],
             'ffmpeg_location': '/usr/bin/ffmpeg',
             'ffprobe_location': '/usr/bin/ffprobe',
@@ -157,37 +157,33 @@ def audio_transcription(youtube_url):
                 print(error_message)
                 return error_message
                 
-            print(f"Audio file downloaded: {audio_file}")
-            
-            # 檢查文件大小，如果太大就分段處理
             file_size = os.path.getsize(audio_file)
-            print(f"Audio file size: {file_size} bytes")
+            print(f"Audio file downloaded: {audio_file} ({file_size} bytes)")
             
-            # 如果文件大於25MB，進行分段處理
+            # 檢查文件大小是否超過 Whisper API 限制 (25MB)
             if file_size > 25 * 1024 * 1024:  # 25MB
-                print("Large file detected, splitting into segments...")
-                return transcribe_large_audio(audio_file)
+                print(f"File size {file_size} bytes exceeds 25MB limit, splitting for Whisper API...")
+                return split_and_transcribe(audio_file)
             else:
-                # 小文件直接處理
-                return transcribe_single_file(audio_file)
+                # 文件小於25MB，直接發送給 Whisper API
+                print("File size within limit, sending directly to Whisper API...")
+                return send_to_whisper(audio_file)
             
     except Exception as e:
         error_message = f"音頻轉錄失敗: {str(e)}"
         print(error_message)
         return error_message
     finally:
-        # 清理所有文件
-        cleanup_files = [audio_file] + segment_files
-        for file_path in cleanup_files:
-            if file_path and os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                    print(f"Cleaned up: {file_path}")
-                except Exception as cleanup_error:
-                    print(f"Failed to cleanup {file_path}: {cleanup_error}")
+        # 清理原始音頻文件
+        if audio_file and os.path.exists(audio_file):
+            try:
+                os.remove(audio_file)
+                print(f"Cleaned up original audio file: {audio_file}")
+            except Exception as cleanup_error:
+                print(f"Failed to cleanup audio file: {cleanup_error}")
 
-def transcribe_single_file(audio_file):
-    """轉錄單個音頻文件"""
+def send_to_whisper(audio_file):
+    """直接發送音頻文件到 Whisper API"""
     try:
         with open(audio_file, 'rb') as f:
             files = {
@@ -197,26 +193,26 @@ def transcribe_single_file(audio_file):
             headers = {
                 "Authorization": f"Bearer {whisper_api_key}"
             }
-            response = requests.post(whisper_base_url, headers=headers, files=files, timeout=180)
+            response = requests.post(whisper_base_url, headers=headers, files=files, timeout=300)
             response.raise_for_status()
             transcript = response.json().get("text", "無法獲取轉錄內容")
-            print("Single file transcription successful.")
+            print("Whisper transcription successful.")
             return transcript
     except Exception as e:
-        return f"單文件轉錄失敗: {str(e)}"
+        return f"Whisper API 轉錄失敗: {str(e)}"
 
-def transcribe_large_audio(audio_file):
-    """分段處理大音頻文件"""
+def split_and_transcribe(audio_file):
+    """將大音頻文件分割成小於25MB的片段，分別發送給 Whisper API"""
     import subprocess
+    import glob
     segment_files = []
     transcripts = []
     
     try:
-        # 使用 ffmpeg 分段（每段10分鐘）
-        segment_duration = 600  # 10分鐘
-        segment_prefix = f"/tmp/segment_{uuid.uuid4()}"
+        # 使用 ffmpeg 按時間分段，確保每段小於25MB
+        segment_duration = 600  # 10分鐘一段
+        segment_prefix = f"/tmp/whisper_segment_{uuid.uuid4()}"
         
-        # 分段命令
         cmd = [
             'ffmpeg', '-i', audio_file,
             '-f', 'segment',
@@ -225,50 +221,47 @@ def transcribe_large_audio(audio_file):
             f'{segment_prefix}_%03d.mp3'
         ]
         
-        print(f"Splitting audio into segments: {' '.join(cmd)}")
+        print(f"Splitting audio for Whisper API: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if result.returncode != 0:
             return f"音頻分段失敗: {result.stderr}"
         
         # 找到所有分段文件
-        import glob
         segment_files = glob.glob(f"{segment_prefix}_*.mp3")
         segment_files.sort()
         
-        print(f"Created {len(segment_files)} segments")
+        print(f"Created {len(segment_files)} segments for Whisper API")
         
-        # 逐個轉錄分段
+        # 逐個發送分段到 Whisper API
         for i, segment_file in enumerate(segment_files):
-            print(f"Transcribing segment {i+1}/{len(segment_files)}: {segment_file}")
+            segment_size = os.path.getsize(segment_file)
+            print(f"Sending segment {i+1}/{len(segment_files)} to Whisper API: {segment_file} ({segment_size} bytes)")
+            
+            # 確保分段文件不超過25MB
+            if segment_size > 25 * 1024 * 1024:
+                print(f"Warning: Segment {i+1} still too large ({segment_size} bytes), skipping...")
+                transcripts.append(f"[分段 {i+1} 文件過大，跳過處理]")
+                continue
             
             try:
-                with open(segment_file, 'rb') as f:
-                    files = {
-                        'file': (f'segment_{i}.mp3', f, 'audio/mpeg'),
-                        'model': (None, 'whisper-1')
-                    }
-                    headers = {
-                        "Authorization": f"Bearer {whisper_api_key}"
-                    }
-                    response = requests.post(whisper_base_url, headers=headers, files=files, timeout=180)
-                    response.raise_for_status()
-                    segment_transcript = response.json().get("text", "")
-                    transcripts.append(segment_transcript)
-                    print(f"Segment {i+1} transcription successful.")
-                    
+                segment_transcript = send_to_whisper(segment_file)
+                transcripts.append(segment_transcript)
+                print(f"Segment {i+1} transcription successful.")
+                
             except Exception as e:
                 print(f"Segment {i+1} transcription failed: {e}")
                 transcripts.append(f"[分段 {i+1} 轉錄失敗: {str(e)}]")
         
         # 合併所有轉錄結果
-        full_transcript = "\n\n".join(transcripts)
+        full_transcript = " ".join(transcripts)  # 用空格連接，讓文字更自然
+        print(f"Combined transcript from {len(transcripts)} segments")
         return full_transcript
         
     except Exception as e:
         return f"分段轉錄失敗: {str(e)}"
     finally:
-        # 清理分段文件
+        # 清理所有分段文件
         for segment_file in segment_files:
             if os.path.exists(segment_file):
                 try:
