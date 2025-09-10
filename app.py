@@ -28,7 +28,6 @@ whisper_api_key = os.getenv('WHISPER_API_KEY')
 
 # 正則表達式
 url_regex = re.compile(r'https?://\S+')
-youtube_regex = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)')
 
 # 自然語言摘要提示詞
 def get_summary_prompt():
@@ -87,29 +86,105 @@ def scrape_text_from_url(url):
         print(f"抓取失敗: {e}")
         return "抓取過程中發生錯誤。", None
 
-# 使用 yt-dlp 提取字幕或音訊
-def process_youtube_video(youtube_url):
+# 檢測 URL 是否被 yt-dlp 支援的影片網站
+def is_supported_by_ytdlp(url):
+    """
+    檢測 URL 是否被 yt-dlp 支援的影片網站
+    使用雙重檢測：URL 模式 + yt-dlp 檢測，避免將一般網站誤判為影片網站
+    """
+    # 第一層：URL 模式檢測已知的影片網站
+    video_site_patterns = [
+        r'youtube\.com|youtu\.be',
+        r'vimeo\.com',
+        r'bilibili\.com',
+        r'dailymotion\.com',
+        r'tiktok\.com',
+        r'twitch\.tv',
+        r'facebook\.com/watch|fb\.watch',
+        r'instagram\.com/(p|reel|tv)',
+        r'twitter\.com/.*/status|x\.com/.*/status',
+        r'soundcloud\.com',
+        r'spotify\.com',
+        r'bandcamp\.com',
+        r'ted\.com/talks',
+        r'coursera\.org',
+        r'khanacademy\.org',
+        r'archive\.org'
+    ]
+    
+    # 如果 URL 不匹配任何已知的影片網站模式，直接返回 False
+    url_lower = url.lower()
+    if not any(re.search(pattern, url_lower) for pattern in video_site_patterns):
+        print(f"URL {url} doesn't match known video site patterns")
+        return False
+    
+    # 第二層：使用 yt-dlp 進行詳細檢測
     try:
-        print(f"Starting to process YouTube URL: {youtube_url}")
-        print(f"URL type: {type(youtube_url)}")
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'cookiesfile': 'cookies.txt'
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # 嘗試提取資訊而不下載
+            info = ydl.extract_info(url, download=False)
+            if info:
+                # 檢查是否包含影片相關的欄位
+                video_indicators = [
+                    'formats',           # 影片格式列表
+                    'duration',          # 影片長度
+                    'view_count',        # 觀看次數
+                    'like_count',        # 按讚數
+                    'upload_date',       # 上傳日期
+                    'uploader',          # 上傳者
+                ]
+                
+                # 如果有 formats 欄位且不為空，很可能是影片
+                if 'formats' in info and info['formats']:
+                    return True
+                
+                # 如果有 duration 且大於 0，很可能是影片
+                if 'duration' in info and info.get('duration', 0) > 0:
+                    return True
+                
+                # 檢查是否有其他影片相關欄位
+                if any(key in info for key in video_indicators):
+                    return True
+                
+                return False
+    except Exception as e:
+        print(f"URL {url} not supported by yt-dlp: {e}")
+        return False
+    
+    return False
+
+# 使用 yt-dlp 提取字幕或音訊
+def process_video_url(video_url):
+    """
+    通用的影音網站處理函數，支援所有 yt-dlp 支援的網站
+    """
+    try:
+        print(f"Starting to process video URL: {video_url}")
+        print(f"URL type: {type(video_url)}")
         
         # 嘗試下載字幕
         ydl_opts = {
             'writesubtitles': True,
             'writeautomaticsub': True,
             'skip_download': True,
-            'subtitleslangs': ['zh-Hant', 'zh-TW', 'en'],
+            'subtitleslangs': ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en'],
             'outtmpl': '/tmp/%(id)s.%(ext)s',
             'cookiesfile': 'cookies.txt'  # 加入 cookies 支援
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
+            info = ydl.extract_info(video_url, download=False)
             video_id = info['id']
             video_title = info.get('title', '無法獲取標題')
             print(f"Video ID: {video_id}")
             print(f"Video Title: {video_title}")
             
-            for lang in ['zh-Hant', 'zh-TW', 'en']:
+            for lang in ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en']:
                 subtitle_path = f"/tmp/{video_id}.{lang}.vtt"
                 print(f"Checking for subtitles at {subtitle_path}")
                 if os.path.exists(subtitle_path):
@@ -122,18 +197,18 @@ def process_youtube_video(youtube_url):
                     
         # 如果無字幕,下載音頻並進行轉錄
         print("No subtitles found, falling back to audio transcription.")
-        transcription = audio_transcription(youtube_url)
+        transcription = audio_transcription(video_url)
         return transcription, video_title
     except Exception as e:
         error_message = f"影片處理失敗: {str(e)}"
         print(error_message)
         return error_message, None
 
-def audio_transcription(youtube_url):
+def audio_transcription(video_url):
     """下載完整音頻，檢查大小，如果超過25MB則分段發送給Whisper API"""
     audio_file = None
     try:
-        print(f"Starting audio transcription for: {youtube_url}")
+        print(f"Starting audio transcription for: {video_url}")
         audio_file_path = f'/tmp/{str(uuid.uuid4())}'
         ydl_opts = {
             'format': 'bestaudio/best',  # 使用最佳音頻質量
@@ -149,7 +224,7 @@ def audio_transcription(youtube_url):
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=True)
+            info = ydl.extract_info(video_url, download=True)
             audio_file = f"{audio_file_path}.mp3"
             
             if not os.path.exists(audio_file):
@@ -288,33 +363,39 @@ def handle_text_message(event):
     msg = event.message.text.strip()
     try:
         print(f"Received message: {msg}")
-        match = youtube_regex.search(msg)
-        if match:
-            youtube_url = match.group(0)
-            print(f"Extracted YouTube URL: {youtube_url}")
-            transcription, video_title = process_youtube_video(youtube_url)
-            if transcription and (transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成")):
-                reply = transcription
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-            else:
-                system_messages = get_summary_prompt()
-                summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
-                title_display = f"【{video_title}】" if video_title else "【YouTube 影片摘要】"
-                full_reply = f"{title_display}\n\n{summary}"
-                send_chunked_reply(event.reply_token, user_id, full_reply)
-        elif url_regex.search(msg):
+        
+        # 檢查是否為 URL
+        if url_regex.search(msg):
             url = url_regex.search(msg).group()
-            content, title = scrape_text_from_url(url)
-            if content == "無法提取此網頁的內容。":
-                reply = content
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            print(f"Detected URL: {url}")
+            
+            # 檢查是否為 yt-dlp 支援的影音網站
+            if is_supported_by_ytdlp(url):
+                print(f"Processing as video URL: {url}")
+                transcription, video_title = process_video_url(url)
+                if transcription and (transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成")):
+                    reply = transcription
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                else:
+                    system_messages = get_summary_prompt()
+                    summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
+                    title_display = f"【{video_title}】" if video_title else "【影音摘要】"
+                    full_reply = f"{title_display}\n\n{summary}"
+                    send_chunked_reply(event.reply_token, user_id, full_reply)
             else:
-                system_messages = get_summary_prompt()
-                summary = chain_response(system_messages, content, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
-                full_reply = f"【標題】: {title}\n\n{summary}"
-                send_chunked_reply(event.reply_token, user_id, full_reply)
+                # 普通網頁處理
+                print(f"Processing as regular webpage: {url}")
+                content, title = scrape_text_from_url(url)
+                if content == "無法提取此網頁的內容。":
+                    reply = content
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                else:
+                    system_messages = get_summary_prompt()
+                    summary = chain_response(system_messages, content, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
+                    full_reply = f"【標題】: {title}\n\n{summary}"
+                    send_chunked_reply(event.reply_token, user_id, full_reply)
         else:
-            reply = "請提供有效的 YouTube 影片連結或普通網頁網址，我將為您生成摘要！"
+            reply = "請提供有效的影音網站連結或普通網頁網址，我將為您生成摘要！\n\n支援的影音網站包括：YouTube、Vimeo、Bilibili、Dailymotion、TikTok、Twitch、Facebook、Instagram、Twitter 等 1000+ 網站"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
     except Exception as e:
         reply = f"發生錯誤: {str(e)}"
