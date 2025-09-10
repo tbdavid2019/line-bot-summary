@@ -134,13 +134,88 @@ python app.py
 - ✅ 一般網頁: `https://example.com/article`
 - ✅ 新聞網站: `https://news.example.com/...`
 
-## 參考資源
-## 參與貢獻
-歡迎發Pull request! 對於重大變更，請先開個Issue來討論你想更改的內容。
+## 🔧 技術架構
 
-## License
+### 核心技術棧
+- **Python 3.x** - 主要開發語言
+- **Flask** - Web 框架
+- **yt-dlp** - 多平台影音內容提取
+- **trafilatura** - 網頁內容提取
+- **LINE Messaging API** - 聊天機器人介面
+- **OpenAI/Gemini API** - 大語言模型
+- **Docker** - 容器化部署
+
+### 核心邏輯流程
+1. **URL 檢測** - 使用正則表達式識別 URL
+2. **平台判斷** - 雙重檢測機制判斷是否為影音網站
+3. **內容提取** - 根據平台類型選擇提取方式
+4. **智能摘要** - 使用 LLM 生成結構化摘要
+5. **分段回傳** - 處理長文本自動分段
+
+## 📊 新版本更新
+
+### v2.0 重大更新
+- 🎯 **擴展影音平台支援** - 從僅支援 YouTube 擴展至 1000+ 網站
+- 🧠 **智能 URL 識別** - 自動區分影音網站和普通網頁
+- 🔄 **備援機制** - 字幕提取失敗時自動音頻轉錄
+- 📝 **優化摘要格式** - 五段式結構化輸出
+- 🐳 **容器化部署** - 完整 Docker 支援
+
+## 🛠️ 自定義設定
+
+### 修改摘要格式
+編輯 `app.py` 中的 `get_summary_prompt()` 函數來自訂摘要風格
+
+### 新增支援網站
+在 `is_supported_by_ytdlp()` 函數的 `video_site_patterns` 列表中新增網站模式
+
+### 調整 LLM 參數
+在 `.env` 文件中調整 `LLM_MODEL`、`MAX_TOKEN_LIMIT` 等參數
+
+## 🤝 參與貢獻
+## 🤝 參與貢獻
+
+歡迎發送 Pull Request！對於重大變更，請先開 Issue 討論你想更改的內容。
+
+### 開發環境設置
+```bash
+# 克隆專案
+git clone https://github.com/tbdavid2019/line-bot-summary.git
+cd line-bot-summary
+
+# 建立虛擬環境
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# 或
+venv\Scripts\activate     # Windows
+
+# 安裝相依套件
+pip install -r requirements.txt
+```
+
+### 功能建議
+- 支援更多語言的字幕提取
+- 新增音頻品質選擇
+- 實作摘要歷史記錄
+- 新增使用者偏好設定
+- 支援批量處理
+
+## 📄 License
+## 📄 License
+
 [MIT License](https://choosealicense.com/licenses/mit/)
 
-此專案的彈性與可擴充性我想是蠻大的。因為只要改個prompt馬上就能變另一種用途的機器人，而且使用了LangChain框架，要加上embedding query等進階功能都不是難事。
+## 🎯 專案願景
 
-歡迎使用此專案的程式碼，發揮想像力造出各種好用的對話機器人。
+此專案具有極大的彈性與可擴充性。透過簡單的 prompt 修改，就能快速轉換成不同用途的聊天機器人。結合強大的 yt-dlp 和現代 LLM 技術，為內容摘要領域提供了完整的解決方案。
+
+**想像無限，創造無限** - 歡迎使用此專案的程式碼，發揮創意打造各種實用的智能機器人！
+
+---
+
+### 📞 聯繫我們
+- **GitHub Issues**: [回報問題或建議](https://github.com/tbdavid2019/line-bot-summary/issues)
+- **LINE Bot 示範**: [加入機器人](https://liff.line.me/1645278921-kWRPP32q/?accountId=032trcev)
+
+### ⭐ Star History
+如果這個專案對你有幫助，請給我們一個 ⭐ Star！
