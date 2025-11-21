@@ -1,7 +1,6 @@
 line-bot-sdk
 flask
 gunicorn
-tiktoken==0.4.0
 requests
 beautifulsoup4
 trafilatura

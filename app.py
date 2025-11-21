@@ -19,12 +19,24 @@ line_bot_api = LineBotApi(os.getenv('CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('CHANNEL_SECRET'))
 
 # API 配置
-llm_base_url = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1/chat/completions')
+llm_base_url_raw = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1')
+# 自動補全 /chat/completions 路徑
+if llm_base_url_raw.endswith('/'):
+    llm_base_url_raw = llm_base_url_raw.rstrip('/')
+if not llm_base_url_raw.endswith('/chat/completions'):
+    llm_base_url = llm_base_url_raw + '/chat/completions'
+else:
+    llm_base_url = llm_base_url_raw
+
 llm_api_key = os.getenv('LLM_API_KEY')
 llm_model = os.getenv('LLM_MODEL', 'gemini-2.0-flash')
 llm_max_tokens = int(os.getenv('MAX_TOKEN_LIMIT', '900000'))
 whisper_base_url = os.getenv('WHISPER_BASE_URL', 'https://api.openai.com/v1/audio/transcriptions')
 whisper_api_key = os.getenv('WHISPER_API_KEY')
+
+# 用戶對話狀態管理（續問功能）
+user_sessions = {}  # {user_id: {"content": str, "title": str, "remaining": int}}
+MAX_FOLLOWUP_QUESTIONS = 5
 
 # 正則表達式
 url_regex = re.compile(r'https?://\S+')
@@ -380,8 +392,15 @@ def handle_text_message(event):
                     system_messages = get_summary_prompt()
                     summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
                     title_display = f"【{video_title}】" if video_title else "【影音摘要】"
-                    full_reply = f"{title_display}\n\n{summary}"
+                    full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個影片的相關問題(最多{MAX_FOLLOWUP_QUESTIONS}次)"
                     send_chunked_reply(event.reply_token, user_id, full_reply)
+                    
+                    # 儲存用戶對話狀態
+                    user_sessions[user_id] = {
+                        "content": transcription,
+                        "title": video_title if video_title else "影音內容",
+                        "remaining": MAX_FOLLOWUP_QUESTIONS
+                    }
             else:
                 # 普通網頁處理
                 print(f"Processing as regular webpage: {url}")
@@ -392,11 +411,42 @@ def handle_text_message(event):
                 else:
                     system_messages = get_summary_prompt()
                     summary = chain_response(system_messages, content, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
-                    full_reply = f"【標題】: {title}\n\n{summary}"
+                    full_reply = f"【標題】: {title}\n\n{summary}\n\n💡 您可以繼續詢問這個網頁的相關問題(最多{MAX_FOLLOWUP_QUESTIONS}次)"
                     send_chunked_reply(event.reply_token, user_id, full_reply)
+                    
+                    # 儲存用戶對話狀態
+                    user_sessions[user_id] = {
+                        "content": content,
+                        "title": title if title else "網頁內容",
+                        "remaining": MAX_FOLLOWUP_QUESTIONS
+                    }
         else:
-            reply = "請提供有效的影音網站連結或普通網頁網址，我將為您生成摘要！\n\n支援的影音網站包括：YouTube、Vimeo、Bilibili、Dailymotion、TikTok、Twitch、Facebook、Instagram、Twitter 等 1000+ 網站"
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            # 檢查是否為續問
+            if user_id in user_sessions and user_sessions[user_id]["remaining"] > 0:
+                session = user_sessions[user_id]
+                print(f"Processing followup question for user {user_id}, remaining: {session['remaining']}")
+                
+                # 使用原始內容回答續問
+                system_messages = [
+                    {
+                        "role": "system",
+                        "content": f"你是一個專業的內容分析助手。以下是【{session['title']}】的完整內容：\n\n{session['content']}\n\n請根據以上內容，用繁體中文回答使用者的問題。回答要準確、具體，並引用原文相關部分。"
+                    }
+                ]
+                
+                answer = chain_response(system_messages, msg, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
+                session["remaining"] -= 1
+                
+                remaining_text = f"\n\n📊 剩餘續問次數: {session['remaining']}"
+                if session["remaining"] == 0:
+                    remaining_text += "\n\n💬 續問次數已用完，請提供新的網址開始新的對話。"
+                    del user_sessions[user_id]  # 清除會話
+                
+                full_reply = answer + remaining_text
+                send_chunked_reply(event.reply_token, user_id, full_reply)
+            else:
+                reply = "請提供有效的影音網站連結或普通網頁網址，我將為您生成摘要！\n\n支援的影音網站包括：YouTube、Vimeo、Bilibili、Dailymotion、TikTok、Twitch、Facebook、Instagram、Twitter 等 1000+ 網站"
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
     except Exception as e:
         reply = f"發生錯誤: {str(e)}"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
