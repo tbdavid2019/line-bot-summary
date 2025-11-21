@@ -2,12 +2,12 @@
 
 # Step 1: 停止並刪除現有容器
 echo "Stopping and removing existing container..."
-docker stop line-bot-summary-container
-docker rm line-bot-summary-container
+sudo docker stop line-bot-summary123
+sudo docker rm line-bot-summary123
 
 # Step 2: 刪除未使用的舊 image
 echo "Removing unused Docker images..."
-docker image prune -f
+sudo docker image prune -f
 
 # Step 3: 建立新的 Docker image
 echo "Building new Docker image..."

@@ -455,6 +455,10 @@ def handle_text_message(event):
                 session = user_sessions[user_id]
                 print(f"Processing followup question for user {user_id}, remaining: {session['remaining']}")
                 
+                # 顯示 loading 動畫
+                chat_id = event.source.user_id if hasattr(event.source, 'user_id') else event.source.group_id if hasattr(event.source, 'group_id') else event.source.room_id
+                show_loading_animation(chat_id)
+                
                 # 使用原始內容回答續問
                 system_messages = [
                     {
