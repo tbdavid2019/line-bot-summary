@@ -41,6 +41,31 @@ MAX_FOLLOWUP_QUESTIONS = 5
 # 正則表達式
 url_regex = re.compile(r'https?://\S+')
 
+# 顯示 Loading 動畫
+def show_loading_animation(chat_id):
+    """顯示 LINE 的 loading indicator"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {os.getenv('CHANNEL_ACCESS_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "chatId": chat_id,
+            "loadingSeconds": 60  # 最長60秒
+        }
+        response = requests.post(
+            "https://api.line.me/v2/bot/chat/loading/start",
+            headers=headers,
+            json=data,
+            timeout=5
+        )
+        if response.status_code == 202:
+            print(f"Loading animation started for chat {chat_id}")
+        else:
+            print(f"Failed to start loading animation: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Error showing loading animation: {e}")
+
 # 自然語言摘要提示詞
 def get_summary_prompt():
     return [
@@ -380,6 +405,10 @@ def handle_text_message(event):
         if url_regex.search(msg):
             url = url_regex.search(msg).group()
             print(f"Detected URL: {url}")
+            
+            # 顯示 loading 動畫
+            chat_id = event.source.user_id if hasattr(event.source, 'user_id') else event.source.group_id if hasattr(event.source, 'group_id') else event.source.room_id
+            show_loading_animation(chat_id)
             
             # 檢查是否為 yt-dlp 支援的影音網站
             if is_supported_by_ytdlp(url):
