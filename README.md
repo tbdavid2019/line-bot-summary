@@ -5,6 +5,9 @@
 LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32q/?accountId=032trcev
 ![alt text](image.png)
 
+
+支援續問
+![alt text](image-1.png)
 ## ✨ 功能特色
 
 ### 🎥 多平台影音支援
@@ -202,8 +205,7 @@ python app.py
 ### 調整 LLM 參數
 在 `.env` 文件中調整 `LLM_MODEL`、`MAX_TOKEN_LIMIT` 等參數
 
-## 🤝 參與貢獻
-## 🤝 參與貢獻
+
 
 歡迎發送 Pull Request！對於重大變更，請先開 Issue 討論你想更改的內容。
 
