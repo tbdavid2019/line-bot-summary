@@ -80,6 +80,8 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 - ✅ **續問功能** - 支援針對同一內容最多 5 次續問（執行緒安全對話狀態管理）
 - ✅ **Loading 動畫** - 處理時非同步發送即時回饋
 - ✅ **彈性 API 配置** - 自動補全 API 路徑，相容 OpenAI 格式 API
+- 🌐 **2MD 即時聯網瀏覽與 SERP 搜尋 (`src/web_browser.py`)** - 整合 `https://2md.aiurl.tw/`、`https://2md.glsoft.ai/`、`https://create360.ai/`，賦予 LLM 即時檢索全網最新事實與資訊之能力，支援直接問答聯網、`!s [關鍵字]`、`!新聞` 等指令，徹底根除幻覺。
+- 📑 **2MD 高速 Markdown 網頁閱讀器** - 自動將任意動態 JavaScript 網頁、新聞或線上文檔轉為純淨 Markdown，並在異常時自動降級本地解析。
 - ✅ **888box 雲端儲存模組 (`src/box_storage.py`)** - 提供同步/非同步檔案、圖片、影音、文字上傳與遠端 URL 轉存，支援三端點自動容錯。
 - 🍪 **YouTube Cookies 自動熱同步 (`extract_youtube_cookies.sh`)** - 定期從 Chrome 容器提取最新登入憑證並熱同步至機器人容器，有效突破 YouTube 嚴格反爬蟲限制。
 - 🔄 **yt-dlp 保持最新機制 (`auto_update_ytdlp.sh`)** - 容器內啟動背景監測與伺服器排程，當 PyPI 有最新版 yt-dlp 時自動更新，確保 1000+ 網站提取永不失效。

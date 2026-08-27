@@ -27,6 +27,11 @@
   - 將 LINE 回覆與推播全面升級為原生非同步 `httpx.AsyncClient` 雙通道發送（優先 Reply Token，超時或失效自動切換 Push Message），解決多 Worker Gunicorn 環境下 `AsyncApiClient` 跨程序事件迴圈失效問題。
 
 ### Added
+- **2MD (888-url2md) 即時聯網瀏覽與 SERP 搜尋模組 ([`src/web_browser.py`](src/web_browser.py))**：
+  - 整合多端點容錯備援（`https://2md.aiurl.tw/`、`https://2md.glsoft.ai/`、`https://create360.ai/`）。
+  - **即時全網搜尋 (Live SERP)**：支援 `!s [關鍵字]`、`!search`、`!新聞` 等指令，以及針對任何自然語言提問自動啟動即時全網檢索，將即時事實餵入 LLM 進行精準回答，徹底消除過期知識與幻覺。
+  - **2MD 高速 Markdown 網頁解析器**：將任意動態 JavaScript 網頁、新聞或線上文檔轉為乾淨 Markdown，大幅提升摘要與問答品質。
+  - 支援針對搜尋結果進行 5 次連續深度追問與上下文記憶管理。
 - **888box 雲端多端點儲存模組 ([`src/box_storage.py`](src/box_storage.py))**：
   - 支援產出檔案 (`file`)、圖片 (`image`)、影音源 (`video`/`audio`)、純文字摘要/逐字稿 (`txt`) 與遠端 URL 轉存上傳。
   - 實作三端點自動容錯備援機制（主要：`https://box.david888.com`，備援 1：`https://box.glsoft.ai`，備援 2：`https://box.aiurl.tw`）。
