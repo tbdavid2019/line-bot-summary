@@ -124,27 +124,40 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 - 音頻轉錄 API 金鑰（用於無字幕影片）
 
 
-## 🐳 快速部署
+### 方法一：使用 Docker Hub 雙架構映像檔（推薦）
+本專案支援 GitHub Actions 全自動建置 **雙架構（`linux/amd64` 與 `linux/arm64`）** Docker Image 並自動發布至 Docker Hub。
 
-### 方法一：使用建置腳本（推薦）
 ```bash
-# 賦予執行權限
-chmod +x build.sh
+# 拉取最新雙架構映像檔（自動依主機架構適配 x86 或 ARM64）
+docker pull tbdavid2019/line-bot-summary:latest
 
-# 執行建置腳本
+# 啟動容器
+docker run -d \
+  -p 8111:5000 \
+  --restart unless-stopped \
+  --env-file .env \
+  -v "$(pwd)/cookies.txt:/app/cookies.txt" \
+  --name line-bot-summary123 \
+  tbdavid2019/line-bot-summary:latest
+```
+
+### 方法二：使用本地建置腳本
+```bash
+# 賦予執行權限並建置啟動
+chmod +x build.sh
 ./build.sh
 ```
 
-### 方法二：手動建置
+### 方法三：手動本地建置
 ```bash
 # 建立 Docker image
 docker build -t line-bot-summary .
 
 # 啟動容器
-docker run -dp 8111:5000 --env-file .env --name line-bot-summary-container line-bot-summary
+docker run -d -p 8111:5000 --env-file .env --name line-bot-summary123 line-bot-summary
 ```
 
-### 方法三：開發模式
+### 方法四：開發模式
 ```bash
 # 安裝相依套件
 pip install -r requirements.txt

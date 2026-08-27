@@ -8,8 +8,15 @@ WORKDIR /app
 COPY . /app
 
 # Install system dependencies (ffmpeg, curl, unzip, deno JS runtime for yt-dlp challenges)
+# Dynamically detects CPU architecture (x86_64 or aarch64/arm64) for multi-platform compatibility
 RUN apt-get update && apt-get install -y ffmpeg curl unzip && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+    && ARCH=$(uname -m) \
+    && if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+         DENO_ARCH="aarch64-unknown-linux-gnu"; \
+       else \
+         DENO_ARCH="x86_64-unknown-linux-gnu"; \
+       fi \
+    && curl -fsSL "https://github.com/denoland/deno/releases/latest/download/deno-${DENO_ARCH}.zip" -o /tmp/deno.zip \
     && unzip -o /tmp/deno.zip -d /usr/local/bin \
     && rm -f /tmp/deno.zip \
     && chmod +x /usr/local/bin/deno

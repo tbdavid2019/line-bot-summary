@@ -18,6 +18,9 @@
     - 支援執行緒安全的用戶續問對話狀態管理 (`asyncio.Lock`)。
   - **部署容器升級 ([`Dockerfile`](Dockerfile))**：
     - 採用 Gunicorn + 多 Worker `uvicorn.workers.UvicornWorker`（預設 4 Workers）以支援高併發負載。
+    - 加入動態架構偵測（`uname -m`），自動依據 `linux/amd64` 或 `linux/arm64` 安裝相容之 Deno 執行檔。
+  - **CI/CD 自動化發布 ([`.github/workflows/docker-build.yml`](.github/workflows/docker-build.yml))**：
+    - 新增 GitHub Actions 雙架構（`linux/amd64`、`linux/arm64`）映像檔建置工作流，設定 Docker Hub Secrets 後在每次 `push main` 或 Release 自動發布最新映像檔。
   - **依賴升級 ([`requirements.txt`](requirements.txt))**：
     - 新增 `fastapi`, `uvicorn[standard]`, `httpx`, `line-bot-sdk>=3.11.0`。
 
