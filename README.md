@@ -101,8 +101,8 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 
 #### LLM API 設定
 - **LLM_API_KEY** - LLM API 密鑰（支援 OpenAI、Gemini 等）
-- **LLM_BASE_URL** - API 基礎 URL（支援簡化格式，如 `https://gemini.david888.com/v1`，系統會自動補全 `/chat/completions`）
-- **LLM_MODEL** - 使用的模型（預設：`gemini-2.0-flash`）
+- **LLM_BASE_URL** - API 基礎 URL（支援簡化格式，如 `https://generativelanguage.googleapis.com/v1beta/openai`，系統會自動補全 `/chat/completions`）
+- **LLM_MODEL** - 使用的模型（預設：`gemini-3.6-flash`）
 - **MAX_TOKEN_LIMIT** - 最大 token 限制（預設：`900000`）
 
 #### Whisper API 設定（音頻轉錄）

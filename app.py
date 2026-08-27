@@ -82,7 +82,7 @@ else:
     llm_base_url = llm_base_url_raw
 
 llm_api_key = os.getenv('LLM_API_KEY', '')
-llm_model = os.getenv('LLM_MODEL', 'gemini-2.0-flash')
+llm_model = os.getenv('LLM_MODEL', 'gemini-3.6-flash')
 llm_max_tokens = int(os.getenv('MAX_TOKEN_LIMIT', '900000'))
 
 # Whisper API 配置
@@ -91,7 +91,7 @@ whisper_api_key = os.getenv('WHISPER_API_KEY', '')
 
 # Gemini Image 配置
 gemini_image_key = os.getenv('GEMINI_IMAGE_API_KEY', '')
-gemini_image_model = os.getenv('GEMINI_IMAGE_MODEL', 'gemini-2.5-flash-image-preview')
+gemini_image_model = os.getenv('GEMINI_IMAGE_MODEL', 'gemini-3.1-flash-image')
 
 # Google Cloud Storage 備援設定
 gcs_bucket_name = os.getenv('GCS_BUCKET_NAME')
