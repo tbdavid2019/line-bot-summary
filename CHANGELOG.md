@@ -29,6 +29,9 @@
 - **LINE 機器人指令支援**：
   - 新增 `!box`、`!stats`、`!空間` 指令以即時查詢 888box 儲存庫狀態與資產計數。
   - 整合 AI 圖片生成 (`!img`) 與儲存流程，生成之圖片直接非同步上傳至 888box 儲存庫並支援 GCS 備援。
+- **自動化維運與即時更新腳本**：
+  - 新增 [`auto_sync_repo.sh`](auto_sync_repo.sh)：自動檢測遠端 main 分支提交並觸發拉取與容器重新建置。
+  - 新增 [`auto_update_ytdlp.sh`](auto_update_ytdlp.sh)：自動監測 PyPI 最新 yt-dlp 版本並於容器內即時升級，確保影音解析永不失效。
 - **文件與規範建立**：
   - 建立專案代理人規範文件 [`AGENTS.md`](AGENTS.md)，規範後續異動主動更新 `CHANGELOG.md` 與 `README.md`。
   - 更新 [`MIGRATION_GUIDE.md`](MIGRATION_GUIDE.md) 詳細解說非同步架構演進與效益。
