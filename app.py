@@ -211,6 +211,13 @@ async def scrape_text_from_url_async(url: str) -> Tuple[str, Optional[str]]:
 
     return await asyncio.to_thread(_sync_scrape_text, url)
 
+def _get_cookie_file() -> Optional[str]:
+    """取得有效的 YouTube cookies.txt 路徑"""
+    for path in ['/app/cookies.txt', 'cookies.txt']:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+    return None
+
 def is_supported_by_ytdlp(url: str) -> bool:
     """檢測 URL 是否被 yt-dlp 支援之影音網站"""
     video_site_patterns = [
@@ -236,13 +243,19 @@ def is_supported_by_ytdlp(url: str) -> bool:
         return False
 
     try:
-        ydl_opts = {'quiet': True, 'no_warnings': True, 'cookiesfile': 'cookies.txt' if os.path.exists('cookies.txt') else None}
+        cookie_path = _get_cookie_file()
+        ydl_opts = {'quiet': True, 'no_warnings': True}
+        if cookie_path:
+            ydl_opts['cookiefile'] = cookie_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            if info and ('formats' in info or info.get('duration', 0) > 0):
+            if info and ('formats' in info or info.get('duration', 0) > 0 or 'entries' in info):
                 return True
     except Exception as e:
         logger.debug(f"yt-dlp extract_info check returned: {e}")
+        # 若為常見影片網址且僅是解析暫時警告，仍視為影音網址
+        if any(re.search(p, url_lower) for p in [r'youtube\.com|youtu\.be', r'bilibili\.com', r'tiktok\.com', r'vimeo\.com']):
+            return True
         return False
     return False
 
@@ -266,6 +279,7 @@ def _sync_process_audio_transcription(video_url: str) -> str:
     audio_file = None
     segment_files = []
     try:
+        cookie_path = _get_cookie_file()
         audio_path_prefix = f'/tmp/{uuid.uuid4()}'
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -275,9 +289,11 @@ def _sync_process_audio_transcription(video_url: str) -> str:
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'cookiesfile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
             'quiet': True
         }
+        if cookie_path:
+            ydl_opts['cookiefile'] = cookie_path
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.extract_info(video_url, download=True)
             audio_file = f"{audio_path_prefix}.mp3"
@@ -329,15 +345,17 @@ def _sync_process_audio_transcription(video_url: str) -> str:
 def _sync_process_video_url(video_url: str) -> Tuple[str, Optional[str]]:
     """提取影音字幕或音訊逐字稿"""
     try:
+        cookie_path = _get_cookie_file()
         ydl_opts = {
             'writesubtitles': True,
             'writeautomaticsub': True,
             'skip_download': True,
             'subtitleslangs': ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en'],
             'outtmpl': '/tmp/%(id)s.%(ext)s',
-            'cookiesfile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
             'quiet': True
         }
+        if cookie_path:
+            ydl_opts['cookiefile'] = cookie_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
             video_id = info.get('id', str(uuid.uuid4()))

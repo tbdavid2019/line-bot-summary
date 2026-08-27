@@ -22,6 +22,11 @@
     - 新增 `fastapi`, `uvicorn[standard]`, `httpx`, `line-bot-sdk>=3.11.0`。
 
 ### Fixed
+- **YouTube 簽名與 n-challenge JS 解密修復 ([`Dockerfile`](Dockerfile), [`app.py`](app.py))**：
+  - 於 Dockerfile 內建 Deno 2.9+ JavaScript 執行環境，解決 yt-dlp 在資料中心 IP 下遭遇 `Signature solving failed / The page needs to be reloaded` 阻擋問題。
+  - 修正 `app.py` 中 yt-dlp 設定參數 `cookiefile`（修正前為錯誤的 `cookiesfile`），確保 `cookies.txt` 憑證能被 yt-dlp 正確讀取。
+- **Gemini LLM 模型名稱與金鑰更新**：
+  - 更新 `.env` 中的 LLM 模型為目前 Google 支援之 `gemini-2.5-flash`，並配置有效之 API Key，消除 400 Bad Request 錯誤。
 - **LINE Webhook 解析與訊息傳送通道強化**：
   - 改用原生 RFC-compliant HMAC-SHA256 簽章驗證與原生 JSON 事件分派，解決 `line-bot-sdk` v3 因 Pydantic 嚴格型別校驗失敗（如缺少 `quoteToken` / `deliveryContext`）導致之 `UnknownEvent` 訊息遺失問題。
   - 將 LINE 回覆與推播全面升級為原生非同步 `httpx.AsyncClient` 雙通道發送（優先 Reply Token，超時或失效自動切換 Push Message），解決多 Worker Gunicorn 環境下 `AsyncApiClient` 跨程序事件迴圈失效問題。

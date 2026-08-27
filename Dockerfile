@@ -7,8 +7,12 @@ WORKDIR /app
 # Copy the current directory contents into the container at /app
 COPY . /app
 
-# Install system dependencies (ffmpeg)
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install system dependencies (ffmpeg, curl, unzip, deno JS runtime for yt-dlp challenges)
+RUN apt-get update && apt-get install -y ffmpeg curl unzip && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+    && unzip -o /tmp/deno.zip -d /usr/local/bin \
+    && rm -f /tmp/deno.zip \
+    && chmod +x /usr/local/bin/deno
 
 # Install python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
