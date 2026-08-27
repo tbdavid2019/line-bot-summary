@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
 RUN python3 -m pip install -U --pre "yt-dlp[default]"
 
-COPY cookies.txt /app/cookies.txt
+RUN touch /app/cookies.txt
 # Make port 5000 available to the world outside this container
 EXPOSE 5000
 
