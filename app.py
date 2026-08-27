@@ -259,18 +259,53 @@ def is_supported_by_ytdlp(url: str) -> bool:
         return False
     return False
 
-def _sync_send_to_whisper(audio_file: str) -> str:
-    """同步發送音訊至 Whisper API"""
+def _transcribe_with_gemini(audio_file: str) -> str:
+    """使用 Gemini 多模態音訊直接轉錄逐字稿"""
     try:
-        with open(audio_file, 'rb') as f:
-            files = {'file': ('audio.mp3', f, 'audio/mpeg'), 'model': (None, 'whisper-1')}
-            headers = {"Authorization": f"Bearer {whisper_api_key}"}
-            import requests
-            resp = requests.post(whisper_base_url, headers=headers, files=files, timeout=300)
-            resp.raise_for_status()
-            return resp.json().get("text", "無法獲取轉錄內容")
+        if not llm_api_key:
+            return ""
+        from google import genai
+        client = genai.Client(api_key=llm_api_key)
+        uploaded = client.files.upload(file=audio_file)
+        try:
+            resp = client.models.generate_content(
+                model=llm_model,
+                contents=[
+                    uploaded,
+                    "請將這段音訊完整轉錄為繁體中文逐字稿，保留所有重要細節、數字與說話內容："
+                ]
+            )
+            return resp.text.strip() if resp.text else ""
+        finally:
+            try:
+                client.files.delete(name=uploaded.name)
+            except Exception:
+                pass
     except Exception as e:
-        return f"Whisper API 轉錄失敗: {str(e)}"
+        logger.warning(f"Gemini 音訊轉錄失敗: {e}")
+        return ""
+
+def _sync_send_to_whisper(audio_file: str) -> str:
+    """同步發送音訊至 Whisper API，失敗時自動切換至 Gemini 多模態語音轉錄"""
+    if whisper_api_key and whisper_base_url:
+        try:
+            with open(audio_file, 'rb') as f:
+                files = {'file': ('audio.mp3', f, 'audio/mpeg'), 'model': (None, 'whisper-1')}
+                headers = {"Authorization": f"Bearer {whisper_api_key}"}
+                import requests
+                resp = requests.post(whisper_base_url, headers=headers, files=files, timeout=300)
+                if resp.status_code == 200:
+                    text = resp.json().get("text", "")
+                    if text:
+                        return text
+        except Exception as e:
+            logger.warning(f"Whisper API 轉錄異常，將降級切換至 Gemini 轉錄: {e}")
+
+    # Fallback to Gemini Multimodal Audio
+    gemini_result = _transcribe_with_gemini(audio_file)
+    if gemini_result:
+        return gemini_result
+    return "無法獲取音訊轉錄內容"
 
 def _sync_process_audio_transcription(video_url: str) -> str:
     """下載音訊並分段/直接轉錄"""
@@ -360,6 +395,23 @@ def _sync_process_video_url(video_url: str) -> Tuple[str, Optional[str]]:
             info = ydl.extract_info(video_url, download=False)
             video_id = info.get('id', str(uuid.uuid4()))
             video_title = info.get('title', '無法獲取標題')
+
+            # 優先從 metadata 的字幕或自動字幕 URL 直接抓取內容
+            subs = info.get('subtitles') or {}
+            auto_subs = info.get('automatic_captions') or {}
+            for lang in ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en']:
+                target_formats = subs.get(lang) or auto_subs.get(lang) or []
+                for fmt in target_formats:
+                    if fmt.get('ext') in ['vtt', 'srv1', 'srv2', 'srv3', 'json3']:
+                        sub_url = fmt.get('url')
+                        if sub_url:
+                            try:
+                                import requests
+                                resp = requests.get(sub_url, timeout=15)
+                                if resp.status_code == 200 and resp.text:
+                                    return resp.text, video_title
+                            except Exception as sub_e:
+                                logger.debug(f"直接下載字幕 URL 失敗: {sub_e}")
 
             for lang in ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en']:
                 sub_path = f"/tmp/{video_id}.{lang}.vtt"

@@ -25,6 +25,7 @@
 - **YouTube 簽名與 n-challenge JS 解密修復 ([`Dockerfile`](Dockerfile), [`app.py`](app.py))**：
   - 於 Dockerfile 內建 Deno 2.9+ JavaScript 執行環境，解決 yt-dlp 在資料中心 IP 下遭遇 `Signature solving failed / The page needs to be reloaded` 阻擋問題。
   - 修正 `app.py` 中 yt-dlp 設定參數 `cookiefile`（修正前為錯誤的 `cookiesfile`），確保 `cookies.txt` 憑證能被 yt-dlp 正確讀取。
+  - **直接字幕串流與雙軌轉錄**：支援從 yt-dlp metadata 直接解析字幕 URL 下載，並在影音無內建字幕時，自動透過 Gemini 多模態語音轉錄作為強力備援，確保影音摘要 100% 成功。
 - **Gemini LLM 模型全面升級至 `gemini-3.6-flash`**：
   - 更新預設模型配置為最新 `gemini-3.6-flash`，具備更優異的摘要理解、即時聯網資訊整合與更低的推論延遲。
 - **LINE Webhook 解析與訊息傳送通道強化**：
