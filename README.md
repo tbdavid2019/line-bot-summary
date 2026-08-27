@@ -81,6 +81,7 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 - ✅ **Loading 動畫** - 處理時非同步發送即時回饋
 - ✅ **彈性 API 配置** - 自動補全 API 路徑，相容 OpenAI 格式 API
 - ✅ **888box 雲端儲存模組 (`src/box_storage.py`)** - 提供同步/非同步檔案、圖片、影音、文字上傳與遠端 URL 轉存，支援三端點自動容錯。
+- 🍪 **YouTube Cookies 自動熱同步 (`extract_youtube_cookies.sh`)** - 定期從 Chrome 容器提取最新登入憑證並熱同步至機器人容器，有效突破 YouTube 嚴格反爬蟲限制。
 - 🔄 **yt-dlp 保持最新機制 (`auto_update_ytdlp.sh`)** - 容器內啟動背景監測與伺服器排程，當 PyPI 有最新版 yt-dlp 時自動更新，確保 1000+ 網站提取永不失效。
 - 🔄 **GitHub 倉庫自動同步腳本 (`auto_sync_repo.sh`)** - 自動監測遠端分支異動並觸發重新建置與無縫升級。
 - ✅ **Python 3.13** - 升級至最新 Python 版本
