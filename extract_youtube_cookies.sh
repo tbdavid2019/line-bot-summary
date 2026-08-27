@@ -33,15 +33,9 @@ if docker ps -q -f name="^chrome$" | grep -q .; then
         COOKIE_COUNT=$(wc -l < "$CHROME_DATA_DIR/youtube_cookies.txt")
         log "Cookies extracted successfully ($COOKIE_COUNT lines). Syncing to bot..."
 
-        # 複製到專案目錄
-        cp "$CHROME_DATA_DIR/youtube_cookies.txt" "$BOT_DIR/cookies.txt"
+        # 覆寫本機掛載檔案（保持 inode 以便 Docker Bind Mount 即時生效）
+        cat "$CHROME_DATA_DIR/youtube_cookies.txt" > "$BOT_DIR/cookies.txt"
         chmod 644 "$BOT_DIR/cookies.txt"
-
-        # 若容器正在運行，同步複製一份至容器內部
-        if docker ps -q -f name="^${CONTAINER_NAME}$" | grep -q .; then
-            docker cp "$BOT_DIR/cookies.txt" "${CONTAINER_NAME}:/app/cookies.txt" || true
-            log "Synced cookies.txt to running container ${CONTAINER_NAME}."
-        fi
 
         # 清理 chrome-data 暫存
         rm -f "$CHROME_DATA_DIR/youtube_cookies.txt"
