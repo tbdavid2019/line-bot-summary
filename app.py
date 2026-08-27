@@ -1,26 +1,89 @@
 import os
 import re
-import requests
 import json
 import uuid
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError  # 加入這行
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+import logging
+import asyncio
+from datetime import datetime
+from typing import Optional, Tuple, Dict, Any
+
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi.responses import JSONResponse
+import httpx
 from bs4 import BeautifulSoup
 import yt_dlp
 import trafilatura
+import mimetypes
 
-# 初始化 Flask 應用
-app = Flask(__name__)
+# LINE Bot SDK v3
+from linebot.v3.webhook import WebhookParser
+from linebot.v3.messaging import (
+    AsyncApiClient,
+    AsyncMessagingApi,
+    Configuration,
+    ReplyMessageRequest,
+    PushMessageRequest,
+    TextMessage,
+    ImageMessage
+)
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.webhooks import (
+    MessageEvent,
+    TextMessageContent
+)
 
-# LINE 配置
-line_bot_api = LineBotApi(os.getenv('CHANNEL_ACCESS_TOKEN'))
-handler = WebhookHandler(os.getenv('CHANNEL_SECRET'))
+# 888box 雲端多端點儲存模組
+from src.box_storage import (
+    BoxStorageClient,
+    upload_bytes_async,
+    upload_text_async,
+    upload_file_async,
+    upload_url_async,
+    get_stats_async
+)
 
-# API 配置
+# Google GenAI / GCS (選用備援)
+try:
+    from google import genai as genai_v2
+    from google.genai import types as genai_types
+except ImportError:
+    genai_v2 = None
+    genai_types = None
+
+try:
+    from google.cloud import storage as gcs_storage
+except ImportError:
+    gcs_storage = None
+
+# 設定日誌
+logging.basicConfig(
+    level=os.getenv('LOG', 'INFO'),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("line-bot-summary")
+
+# 初始化 FastAPI
+app = FastAPI(
+    title="LINE Bot Smart Summary & Media Bot",
+    description="High-concurrency async LINE Bot for 1000+ video summaries, web scraping, image generation, and 888box storage.",
+    version="3.0.0"
+)
+
+# LINE 憑證配置
+channel_secret = os.getenv('CHANNEL_SECRET')
+channel_access_token = os.getenv('CHANNEL_ACCESS_TOKEN')
+
+if not channel_secret:
+    logger.warning("CHANNEL_SECRET is not set in environment variables.")
+if not channel_access_token:
+    logger.warning("CHANNEL_ACCESS_TOKEN is not set in environment variables.")
+
+configuration = Configuration(access_token=channel_access_token or "dummy_token")
+parser = WebhookParser(channel_secret or "dummy_secret")
+line_bot_api = AsyncMessagingApi(configuration)
+
+# LLM API 配置
 llm_base_url_raw = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1')
-# 自動補全 /chat/completions 路徑
 if llm_base_url_raw.endswith('/'):
     llm_base_url_raw = llm_base_url_raw.rstrip('/')
 if not llm_base_url_raw.endswith('/chat/completions'):
@@ -28,46 +91,66 @@ if not llm_base_url_raw.endswith('/chat/completions'):
 else:
     llm_base_url = llm_base_url_raw
 
-llm_api_key = os.getenv('LLM_API_KEY')
+llm_api_key = os.getenv('LLM_API_KEY', '')
 llm_model = os.getenv('LLM_MODEL', 'gemini-2.0-flash')
 llm_max_tokens = int(os.getenv('MAX_TOKEN_LIMIT', '900000'))
+
+# Whisper API 配置
 whisper_base_url = os.getenv('WHISPER_BASE_URL', 'https://api.openai.com/v1/audio/transcriptions')
-whisper_api_key = os.getenv('WHISPER_API_KEY')
+whisper_api_key = os.getenv('WHISPER_API_KEY', '')
+
+# Gemini Image 配置
+gemini_image_key = os.getenv('GEMINI_IMAGE_API_KEY', '')
+gemini_image_model = os.getenv('GEMINI_IMAGE_MODEL', 'gemini-2.5-flash-image-preview')
+
+# Google Cloud Storage 備援設定
+gcs_bucket_name = os.getenv('GCS_BUCKET_NAME')
+gcs_credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+gcs_bucket = None
+if gcs_storage and gcs_credentials_path and gcs_bucket_name:
+    try:
+        gcs_client = gcs_storage.Client()
+        gcs_bucket = gcs_client.bucket(gcs_bucket_name)
+        logger.info(f"GCS bucket initialized: {gcs_bucket_name}")
+    except Exception as e:
+        logger.warning(f"Failed to initialize GCS: {e}")
 
 # 用戶對話狀態管理（續問功能）
-user_sessions = {}  # {user_id: {"content": str, "title": str, "remaining": int}}
+user_sessions: Dict[str, Dict[str, Any]] = {}
+user_sessions_lock = asyncio.Lock()
 MAX_FOLLOWUP_QUESTIONS = 5
 
 # 正則表達式
 url_regex = re.compile(r'https?://\S+')
 
-# 顯示 Loading 動畫
-def show_loading_animation(chat_id):
-    """顯示 LINE 的 loading indicator"""
+# ----------------------------------------------------------------------
+# 異步輔助功能
+# ----------------------------------------------------------------------
+async def show_loading_animation_async(chat_id: str, loading_seconds: int = 60):
+    """非同步發送 LINE loading 動畫，給予使用者即時回饋"""
+    if not channel_access_token:
+        return
+    url = "https://api.line.me/v2/bot/chat/loading/start"
+    headers = {
+        "Authorization": f"Bearer {channel_access_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "chatId": chat_id,
+        "loadingSeconds": min(loading_seconds, 60)
+    }
     try:
-        headers = {
-            "Authorization": f"Bearer {os.getenv('CHANNEL_ACCESS_TOKEN')}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "chatId": chat_id,
-            "loadingSeconds": 60  # 最長60秒
-        }
-        response = requests.post(
-            "https://api.line.me/v2/bot/chat/loading/start",
-            headers=headers,
-            json=data,
-            timeout=5
-        )
-        if response.status_code == 202:
-            print(f"Loading animation started for chat {chat_id}")
-        else:
-            print(f"Failed to start loading animation: {response.status_code} - {response.text}")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code == 202:
+                logger.debug(f"Loading animation started for {chat_id}")
+            else:
+                logger.debug(f"Loading animation returned {resp.status_code}: {resp.text}")
     except Exception as e:
-        print(f"Error showing loading animation: {e}")
+        logger.debug(f"Error showing loading animation: {e}")
 
-# 自然語言摘要提示詞
 def get_summary_prompt():
+    """自然語言結構化摘要提示詞"""
     return [
         {
             "role": "system",
@@ -82,54 +165,53 @@ def get_summary_prompt():
         }
     ]
 
-# 使用 LLM 生成摘要
-def chain_response(system_messages, text, base_url, api_key, model, max_tokens):
+async def chain_response_async(system_messages, text: str) -> str:
+    """非同步呼叫 LLM 生成摘要或回答"""
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {llm_api_key}",
         "Content-Type": "application/json",
     }
     data = {
-        "model": model,
+        "model": llm_model,
         "messages": system_messages + [{"role": "user", "content": text}],
-        "max_tokens": max_tokens,
+        "max_tokens": llm_max_tokens,
         "temperature": 0.5,
     }
     try:
-        response = requests.post(base_url, headers=headers, json=data, timeout=60)
-        response.raise_for_status()
-        try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(llm_base_url, headers=headers, json=data)
+            response.raise_for_status()
             result = response.json()
             return result["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            return f"API 回傳格式錯誤: {str(e)}\n原始回應: {response.text}"
-    except requests.exceptions.Timeout:
-        return "API 請求逾時，請稍後再試。"
-    except requests.exceptions.RequestException as e:
-        return f"API 請求發生錯誤: {str(e)}\n原始回應: {getattr(e.response, 'text', '')}"
+    except httpx.TimeoutException:
+        return "⚠️ LLM API 請求逾時，請稍後再試。"
+    except Exception as e:
+        logger.error(f"LLM API error: {e}")
+        return f"⚠️ LLM API 請求發生錯誤: {str(e)}"
 
-# 從普通網頁抓取內容
-def scrape_text_from_url(url):
+# ----------------------------------------------------------------------
+# 網頁與影音非同步抓取處理 (Non-blocking via Thread Pool)
+# ----------------------------------------------------------------------
+def _sync_scrape_text(url: str) -> Tuple[str, Optional[str]]:
+    """同步抓取網頁內容"""
     try:
-        print(f"Scraping URL: {url}")
         downloaded = trafilatura.fetch_url(url)
         if downloaded is None:
             return "無法提取此網頁的內容。", None
-        
         content = trafilatura.extract(downloaded, include_formatting=True)
         soup = BeautifulSoup(downloaded, 'html.parser')
         title = soup.title.string if soup.title else "無法獲取標題"
-        return content.strip(), title
+        return (content.strip() if content else "無法提取此網頁的文字內容。"), title
     except Exception as e:
-        print(f"抓取失敗: {e}")
-        return "抓取過程中發生錯誤。", None
+        logger.error(f"抓取失敗: {e}")
+        return f"抓取過程中發生錯誤: {e}", None
 
-# 檢測 URL 是否被 yt-dlp 支援的影片網站
-def is_supported_by_ytdlp(url):
-    """
-    檢測 URL 是否被 yt-dlp 支援的影片網站
-    使用雙重檢測：URL 模式 + yt-dlp 檢測，避免將一般網站誤判為影片網站
-    """
-    # 第一層：URL 模式檢測已知的影片網站
+async def scrape_text_from_url_async(url: str) -> Tuple[str, Optional[str]]:
+    """非同步包裝網頁抓取"""
+    return await asyncio.to_thread(_sync_scrape_text, url)
+
+def is_supported_by_ytdlp(url: str) -> bool:
+    """檢測 URL 是否被 yt-dlp 支援之影音網站"""
     video_site_patterns = [
         r'youtube\.com|youtu\.be',
         r'vimeo\.com',
@@ -148,183 +230,68 @@ def is_supported_by_ytdlp(url):
         r'khanacademy\.org',
         r'archive\.org'
     ]
-    
-    # 如果 URL 不匹配任何已知的影片網站模式，直接返回 False
     url_lower = url.lower()
-    if not any(re.search(pattern, url_lower) for pattern in video_site_patterns):
-        print(f"URL {url} doesn't match known video site patterns")
+    if not any(re.search(p, url_lower) for p in video_site_patterns):
         return False
-    
-    # 第二層：使用 yt-dlp 進行詳細檢測
+
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'cookiesfile': 'cookies.txt'
-        }
-        
+        ydl_opts = {'quiet': True, 'no_warnings': True, 'cookiesfile': 'cookies.txt' if os.path.exists('cookies.txt') else None}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # 嘗試提取資訊而不下載
             info = ydl.extract_info(url, download=False)
-            if info:
-                # 檢查是否包含影片相關的欄位
-                video_indicators = [
-                    'formats',           # 影片格式列表
-                    'duration',          # 影片長度
-                    'view_count',        # 觀看次數
-                    'like_count',        # 按讚數
-                    'upload_date',       # 上傳日期
-                    'uploader',          # 上傳者
-                ]
-                
-                # 如果有 formats 欄位且不為空，很可能是影片
-                if 'formats' in info and info['formats']:
-                    return True
-                
-                # 如果有 duration 且大於 0，很可能是影片
-                if 'duration' in info and info.get('duration', 0) > 0:
-                    return True
-                
-                # 檢查是否有其他影片相關欄位
-                if any(key in info for key in video_indicators):
-                    return True
-                
-                return False
+            if info and ('formats' in info or info.get('duration', 0) > 0):
+                return True
     except Exception as e:
-        print(f"URL {url} not supported by yt-dlp: {e}")
+        logger.debug(f"yt-dlp extract_info check returned: {e}")
         return False
-    
     return False
 
-# 使用 yt-dlp 提取字幕或音訊
-def process_video_url(video_url):
-    """
-    通用的影音網站處理函數，支援所有 yt-dlp 支援的網站
-    """
+def _sync_send_to_whisper(audio_file: str) -> str:
+    """同步發送音訊至 Whisper API"""
     try:
-        print(f"Starting to process video URL: {video_url}")
-        print(f"URL type: {type(video_url)}")
-        
-        # 嘗試下載字幕
-        ydl_opts = {
-            'writesubtitles': True,
-            'writeautomaticsub': True,
-            'skip_download': True,
-            'subtitleslangs': ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en'],
-            'outtmpl': '/tmp/%(id)s.%(ext)s',
-            'cookiesfile': 'cookies.txt'  # 加入 cookies 支援
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            video_id = info['id']
-            video_title = info.get('title', '無法獲取標題')
-            print(f"Video ID: {video_id}")
-            print(f"Video Title: {video_title}")
-            
-            for lang in ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en']:
-                subtitle_path = f"/tmp/{video_id}.{lang}.vtt"
-                print(f"Checking for subtitles at {subtitle_path}")
-                if os.path.exists(subtitle_path):
-                    print(f"Found subtitles: {subtitle_path}")
-                    with open(subtitle_path, 'r', encoding='utf-8') as file:
-                        subtitle_content = file.read()
-                    # 清理字幕文件
-                    os.remove(subtitle_path)
-                    return subtitle_content, video_title
-                    
-        # 如果無字幕,下載音頻並進行轉錄
-        print("No subtitles found, falling back to audio transcription.")
-        transcription = audio_transcription(video_url)
-        return transcription, video_title
+        with open(audio_file, 'rb') as f:
+            files = {'file': ('audio.mp3', f, 'audio/mpeg'), 'model': (None, 'whisper-1')}
+            headers = {"Authorization": f"Bearer {whisper_api_key}"}
+            import requests
+            resp = requests.post(whisper_base_url, headers=headers, files=files, timeout=300)
+            resp.raise_for_status()
+            return resp.json().get("text", "無法獲取轉錄內容")
     except Exception as e:
-        error_message = f"影片處理失敗: {str(e)}"
-        print(error_message)
-        return error_message, None
+        return f"Whisper API 轉錄失敗: {str(e)}"
 
-def audio_transcription(video_url):
-    """下載完整音頻，檢查大小，如果超過25MB則分段發送給Whisper API"""
+def _sync_process_audio_transcription(video_url: str) -> str:
+    """下載音訊並分段/直接轉錄"""
+    import subprocess
+    import glob
     audio_file = None
+    segment_files = []
     try:
-        print(f"Starting audio transcription for: {video_url}")
-        audio_file_path = f'/tmp/{str(uuid.uuid4())}'
+        audio_path_prefix = f'/tmp/{uuid.uuid4()}'
         ydl_opts = {
-            'format': 'bestaudio/best',  # 使用最佳音頻質量
-            'outtmpl': f'{audio_file_path}.%(ext)s',
+            'format': 'bestaudio/best',
+            'outtmpl': f'{audio_path_prefix}.%(ext)s',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'ffmpeg_location': '/usr/bin/ffmpeg',
-            'ffprobe_location': '/usr/bin/ffprobe',
-            'cookiesfile': 'cookies.txt'  # 加入 cookies 支援
+            'cookiesfile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+            'quiet': True
         }
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            audio_file = f"{audio_file_path}.mp3"
-            
-            if not os.path.exists(audio_file):
-                error_message = "音頻文件未生成,請檢查下載過程。"
-                print(error_message)
-                return error_message
-                
-            file_size = os.path.getsize(audio_file)
-            print(f"Audio file downloaded: {audio_file} ({file_size} bytes)")
-            
-            # 檢查文件大小是否超過 Whisper API 限制 (25MB)
-            if file_size > 25 * 1024 * 1024:  # 25MB
-                print(f"File size {file_size} bytes exceeds 25MB limit, splitting for Whisper API...")
-                return split_and_transcribe(audio_file)
-            else:
-                # 文件小於25MB，直接發送給 Whisper API
-                print("File size within limit, sending directly to Whisper API...")
-                return send_to_whisper(audio_file)
-            
-    except Exception as e:
-        error_message = f"音頻轉錄失敗: {str(e)}"
-        print(error_message)
-        return error_message
-    finally:
-        # 清理原始音頻文件
-        if audio_file and os.path.exists(audio_file):
-            try:
-                os.remove(audio_file)
-                print(f"Cleaned up original audio file: {audio_file}")
-            except Exception as cleanup_error:
-                print(f"Failed to cleanup audio file: {cleanup_error}")
+            ydl.extract_info(video_url, download=True)
+            audio_file = f"{audio_path_prefix}.mp3"
 
-def send_to_whisper(audio_file):
-    """直接發送音頻文件到 Whisper API"""
-    try:
-        with open(audio_file, 'rb') as f:
-            files = {
-                'file': ('audio.mp3', f, 'audio/mpeg'),
-                'model': (None, 'whisper-1')
-            }
-            headers = {
-                "Authorization": f"Bearer {whisper_api_key}"
-            }
-            response = requests.post(whisper_base_url, headers=headers, files=files, timeout=300)
-            response.raise_for_status()
-            transcript = response.json().get("text", "無法獲取轉錄內容")
-            print("Whisper transcription successful.")
-            return transcript
-    except Exception as e:
-        return f"Whisper API 轉錄失敗: {str(e)}"
+        if not os.path.exists(audio_file):
+            return "音頻文件未生成，請檢查影音來源。"
 
-def split_and_transcribe(audio_file):
-    """將大音頻文件分割成小於25MB的片段，分別發送給 Whisper API"""
-    import subprocess
-    import glob
-    segment_files = []
-    transcripts = []
-    
-    try:
-        # 使用 ffmpeg 按時間分段，確保每段小於25MB
-        segment_duration = 600  # 10分鐘一段
-        segment_prefix = f"/tmp/whisper_segment_{uuid.uuid4()}"
-        
+        file_size = os.path.getsize(audio_file)
+        # 小於 25MB 直接發送
+        if file_size <= 25 * 1024 * 1024:
+            return _sync_send_to_whisper(audio_file)
+
+        # 超過 25MB 進行分段
+        segment_duration = 600
+        segment_prefix = f"/tmp/segment_{uuid.uuid4()}"
         cmd = [
             'ffmpeg', '-i', audio_file,
             '-f', 'segment',
@@ -332,182 +299,416 @@ def split_and_transcribe(audio_file):
             '-c', 'copy',
             f'{segment_prefix}_%03d.mp3'
         ]
-        
-        print(f"Splitting audio for Whisper API: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        
-        if result.returncode != 0:
-            return f"音頻分段失敗: {result.stderr}"
-        
-        # 找到所有分段文件
-        segment_files = glob.glob(f"{segment_prefix}_*.mp3")
-        segment_files.sort()
-        
-        print(f"Created {len(segment_files)} segments for Whisper API")
-        
-        # 逐個發送分段到 Whisper API
-        for i, segment_file in enumerate(segment_files):
-            segment_size = os.path.getsize(segment_file)
-            print(f"Sending segment {i+1}/{len(segment_files)} to Whisper API: {segment_file} ({segment_size} bytes)")
-            
-            # 確保分段文件不超過25MB
-            if segment_size > 25 * 1024 * 1024:
-                print(f"Warning: Segment {i+1} still too large ({segment_size} bytes), skipping...")
-                transcripts.append(f"[分段 {i+1} 文件過大，跳過處理]")
-                continue
-            
-            try:
-                segment_transcript = send_to_whisper(segment_file)
-                transcripts.append(segment_transcript)
-                print(f"Segment {i+1} transcription successful.")
-                
-            except Exception as e:
-                print(f"Segment {i+1} transcription failed: {e}")
-                transcripts.append(f"[分段 {i+1} 轉錄失敗: {str(e)}]")
-        
-        # 合併所有轉錄結果
-        full_transcript = " ".join(transcripts)  # 用空格連接，讓文字更自然
-        print(f"Combined transcript from {len(transcripts)} segments")
-        return full_transcript
-        
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if res.returncode != 0:
+            return f"音頻分段失敗: {res.stderr}"
+
+        segment_files = sorted(glob.glob(f"{segment_prefix}_*.mp3"))
+        transcripts = []
+        for sf in segment_files:
+            if os.path.getsize(sf) <= 25 * 1024 * 1024:
+                transcripts.append(_sync_send_to_whisper(sf))
+        return " ".join(transcripts)
+
     except Exception as e:
-        return f"分段轉錄失敗: {str(e)}"
+        return f"音頻轉錄失敗: {str(e)}"
     finally:
-        # 清理所有分段文件
-        for segment_file in segment_files:
-            if os.path.exists(segment_file):
+        if audio_file and os.path.exists(audio_file):
+            try:
+                os.remove(audio_file)
+            except Exception:
+                pass
+        for sf in segment_files:
+            if os.path.exists(sf):
                 try:
-                    os.remove(segment_file)
-                    print(f"Cleaned up segment: {segment_file}")
-                except Exception as cleanup_error:
-                    print(f"Failed to cleanup segment {segment_file}: {cleanup_error}")
+                    os.remove(sf)
+                except Exception:
+                    pass
 
-# LINE Webhook
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
+def _sync_process_video_url(video_url: str) -> Tuple[str, Optional[str]]:
+    """提取影音字幕或音訊逐字稿"""
     try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return 'OK'
+        ydl_opts = {
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'skip_download': True,
+            'subtitleslangs': ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en'],
+            'outtmpl': '/tmp/%(id)s.%(ext)s',
+            'cookiesfile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+            'quiet': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            video_id = info.get('id', str(uuid.uuid4()))
+            video_title = info.get('title', '無法獲取標題')
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_text_message(event):
-    user_id = event.source.user_id
+            for lang in ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en']:
+                sub_path = f"/tmp/{video_id}.{lang}.vtt"
+                if os.path.exists(sub_path):
+                    with open(sub_path, 'r', encoding='utf-8') as f:
+                        sub_content = f.read()
+                    try:
+                        os.remove(sub_path)
+                    except Exception:
+                        pass
+                    return sub_content, video_title
+
+        # 若無字幕則轉錄音訊
+        transcription = _sync_process_audio_transcription(video_url)
+        return transcription, video_title
+    except Exception as e:
+        return f"影片處理失敗: {str(e)}", None
+
+async def process_video_url_async(video_url: str) -> Tuple[str, Optional[str]]:
+    """非同步包裝影音處理"""
+    return await asyncio.to_thread(_sync_process_video_url, video_url)
+
+# ----------------------------------------------------------------------
+# 圖片生成與雲端儲存
+# ----------------------------------------------------------------------
+async def upload_image_to_storage_async(image_data: bytes, filename: str, mime_type: str = "image/png", title: Optional[str] = None) -> Optional[str]:
+    """上傳圖片至 888box 多端點儲存（Primary: box.david888.com, Fallbacks: box.glsoft.ai, box.aiurl.tw）"""
+    try:
+        res = await upload_bytes_async(
+            data_bytes=image_data,
+            filename=filename,
+            content_type=mime_type,
+            title=title or filename
+        )
+        if res.get("result") == "success":
+            return res.get("data", {}).get("url") or res.get("url")
+    except Exception as e:
+        logger.warning(f"888box upload failed: {e}")
+
+    # GCS 備援
+    if gcs_bucket:
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_name = f"linebot_images/{timestamp}_{filename}"
+            blob = gcs_bucket.blob(unique_name)
+            await asyncio.to_thread(blob.upload_from_string, image_data, content_type=mime_type)
+            from urllib.parse import quote
+            return f"https://storage.googleapis.com/{gcs_bucket.name}/{quote(unique_name, safe='/')}"
+        except Exception as e:
+            logger.error(f"GCS upload failed: {e}")
+
+    return None
+
+async def generate_image_with_gemini_async(prompt: str) -> Tuple[bool, str]:
+    """使用 Gemini 生成圖片並非同步上傳至 888box 雲端儲存"""
+    if not gemini_image_key:
+        return False, "❌ 尚未設定 GEMINI_IMAGE_API_KEY"
+
+    if not genai_v2:
+        return False, "❌ 未安裝 google-genai 依賴套件"
+
+    try:
+        client = genai_v2.Client(api_key=gemini_image_key)
+        contents = [
+            genai_types.Content(
+                role="user",
+                parts=[genai_types.Part.from_text(text=f"Generate photorealistic image of: {prompt}")],
+            ),
+        ]
+        config = genai_types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
+
+        def _sync_generate():
+            return list(client.models.generate_content_stream(model=gemini_image_model, contents=contents, config=config))
+
+        chunks = await asyncio.to_thread(_sync_generate)
+
+        for chunk in chunks:
+            if hasattr(chunk, 'candidates') and chunk.candidates:
+                part = chunk.candidates[0].content.parts[0]
+                if hasattr(part, 'inline_data') and part.inline_data and part.inline_data.data:
+                    inline = part.inline_data
+                    ext = mimetypes.guess_extension(inline.mime_type) or '.png'
+                    safe_p = "".join(c if c.isalnum() else '_' for c in prompt)[:30]
+                    fn = f"gemini_{safe_p}{ext}"
+                    image_url = await upload_image_to_storage_async(inline.data, fn, inline.mime_type, title=prompt)
+                    if image_url:
+                        return True, image_url
+
+        return False, "❌ 模型未回傳圖片資料，請嘗試更具體的描述。"
+    except Exception as e:
+        logger.error(f"Image generation error: {e}")
+        return False, f"❌ 圖片生成失敗: {str(e)}"
+
+# ----------------------------------------------------------------------
+# 非同步訊息分段與發送
+# ----------------------------------------------------------------------
+async def send_response_async(to_id: str, text: str, reply_token: Optional[str] = None):
+    """
+    發送訊息至使用者或群組。
+    優先嘗試 reply_token 回覆，若失敗或過期則自動使用 push_message 發送。
+    自動將超過 2000 字元的長文本分段發送。
+    """
+    MAX_LEN = 2000
+    chunks = []
+    for i in range(0, len(text), MAX_LEN):
+        chunk = text[i:i + MAX_LEN]
+        if i > 0:
+            chunk = f"【續 {i//MAX_LEN + 1}】\n{chunk}"
+        chunks.append(chunk)
+
+    if not chunks:
+        return
+
+    # 嘗試第一則使用 reply_token
+    replied = False
+    if reply_token:
+        try:
+            await line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=chunks[0])]
+                )
+            )
+            replied = True
+        except Exception as e:
+            logger.debug(f"Reply with token failed ({e}), falling back to push_message")
+
+    start_idx = 1 if replied else 0
+    for chunk in chunks[start_idx:]:
+        try:
+            await line_bot_api.push_message(
+                PushMessageRequest(
+                    to=to_id,
+                    messages=[TextMessage(text=chunk)]
+                )
+            )
+        except Exception as e:
+            logger.error(f"Push message failed for {to_id}: {e}")
+
+# ----------------------------------------------------------------------
+# 非同步事件處理核心 (Worker Pipeline)
+# ----------------------------------------------------------------------
+async def handle_message_event_async(event: MessageEvent):
+    """
+    背景非同步處理各類 LINE 訊息事件。
+    在背景任務中執行，完全不阻擋 LINE Webhook 200 OK 回應！
+    """
+    source = event.source
+    to_id = source.group_id if hasattr(source, 'group_id') and source.group_id else (
+        source.room_id if hasattr(source, 'room_id') and source.room_id else source.user_id
+    )
+    user_id = source.user_id if hasattr(source, 'user_id') else to_id
     msg = event.message.text.strip()
+    reply_token = event.reply_token
+
+    logger.info(f"Processing message from {user_id} in {to_id}: {msg[:50]}")
+
     try:
-        print(f"Received message: {msg}")
-        
-        # 檢查是否為 URL
-        if url_regex.search(msg):
-            url = url_regex.search(msg).group()
-            print(f"Detected URL: {url}")
-            
-            # 顯示 loading 動畫
-            chat_id = event.source.user_id if hasattr(event.source, 'user_id') else event.source.group_id if hasattr(event.source, 'group_id') else event.source.room_id
-            show_loading_animation(chat_id)
-            
-            # 檢查是否為 yt-dlp 支援的影音網站
+        # 1. 888box 儲存庫狀態查詢指令
+        storage_cmds = ['!box', '!storage', '!stats', '!空間', '!容量']
+        if any(msg.lower() == cmd for cmd in storage_cmds):
+            stats = await get_stats_async()
+            if stats.get("result") == "success":
+                data = stats.get("data", {})
+                reply = (
+                    f"📦 雲端儲存空間狀態 (888box)\n"
+                    f"🔗 主端點: {stats.get('endpoint')}\n"
+                    f"📊 總資產數: {data.get('total', 0)}\n"
+                    f"🖼️ 圖片數: {data.get('image', 0)}\n"
+                    f"🎥 影片數: {data.get('video', 0)}\n"
+                    f"🎵 音訊數: {data.get('audio', 0)}\n"
+                    f"📁 一般檔案: {data.get('file', 0)}"
+                )
+            else:
+                reply = f"❌ 取得儲存空間狀態失敗: {stats.get('message', '未知錯誤')}"
+            await send_response_async(to_id, reply, reply_token)
+            return
+
+        # 2. AI 圖片生成指令
+        image_cmds = ['!img', '!畫圖', '!生成圖片', '!image', '!draw']
+        if any(msg.lower().startswith(cmd) for cmd in image_cmds):
+            prompt = msg
+            for cmd in image_cmds:
+                if msg.lower().startswith(cmd):
+                    prompt = msg[len(cmd):].strip()
+                    break
+
+            if not prompt:
+                await send_response_async(to_id, "請提供圖片描述，例如：`!img 可愛的柴犬在櫻花樹下`", reply_token)
+                return
+
+            await show_loading_animation_async(to_id, 60)
+            success, result = await generate_image_with_gemini_async(prompt)
+            if success:
+                try:
+                    img_msg = ImageMessage(original_content_url=result, preview_image_url=result)
+                    await line_bot_api.push_message(PushMessageRequest(to=to_id, messages=[img_msg]))
+                except Exception as img_err:
+                    logger.error(f"Failed to send image message: {img_err}")
+                    await send_response_async(to_id, f"🎨 圖片生成成功，但發送失敗。圖片網址：{result}")
+            else:
+                await send_response_async(to_id, result, reply_token)
+            return
+
+        # 3. 網址摘要處理 (影音或網頁)
+        url_match = url_regex.search(msg)
+        if url_match:
+            url = url_match.group()
+            await show_loading_animation_async(to_id, 60)
+
+            # 檢測影音網站 vs 普通網頁
             if is_supported_by_ytdlp(url):
-                print(f"Processing as video URL: {url}")
-                transcription, video_title = process_video_url(url)
+                logger.info(f"Processing as video URL: {url}")
+                transcription, video_title = await process_video_url_async(url)
                 if transcription and (transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成")):
-                    reply = transcription
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-                else:
-                    system_messages = get_summary_prompt()
-                    summary = chain_response(system_messages, transcription, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
-                    title_display = f"【{video_title}】" if video_title else "【影音摘要】"
-                    full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個影片的相關問題(最多{MAX_FOLLOWUP_QUESTIONS}次)"
-                    send_chunked_reply(event.reply_token, user_id, full_reply)
-                    
-                    # 儲存用戶對話狀態
+                    await send_response_async(to_id, transcription, reply_token)
+                    return
+
+                system_prompt = get_summary_prompt()
+                summary = await chain_response_async(system_prompt, transcription)
+                title_display = f"【{video_title}】" if video_title else "【影音內容摘要】"
+                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個影片的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
+                await send_response_async(to_id, full_reply, reply_token)
+
+                async with user_sessions_lock:
                     user_sessions[user_id] = {
                         "content": transcription,
-                        "title": video_title if video_title else "影音內容",
+                        "title": video_title or "影音內容",
                         "remaining": MAX_FOLLOWUP_QUESTIONS
                     }
+                return
             else:
-                # 普通網頁處理
-                print(f"Processing as regular webpage: {url}")
-                content, title = scrape_text_from_url(url)
-                if content == "無法提取此網頁的內容。":
-                    reply = content
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-                else:
-                    system_messages = get_summary_prompt()
-                    summary = chain_response(system_messages, content, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
-                    full_reply = f"【標題】: {title}\n\n{summary}\n\n💡 您可以繼續詢問這個網頁的相關問題(最多{MAX_FOLLOWUP_QUESTIONS}次)"
-                    send_chunked_reply(event.reply_token, user_id, full_reply)
-                    
-                    # 儲存用戶對話狀態
+                logger.info(f"Processing as regular webpage URL: {url}")
+                content, title = await scrape_text_from_url_async(url)
+                if content.startswith("無法提取") or content.startswith("抓取過程中發生錯誤"):
+                    await send_response_async(to_id, content, reply_token)
+                    return
+
+                system_prompt = get_summary_prompt()
+                summary = await chain_response_async(system_prompt, content)
+                title_display = f"【標題】: {title}" if title else "【網頁內容摘要】"
+                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個網頁的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
+                await send_response_async(to_id, full_reply, reply_token)
+
+                async with user_sessions_lock:
                     user_sessions[user_id] = {
                         "content": content,
-                        "title": title if title else "網頁內容",
+                        "title": title or "網頁內容",
                         "remaining": MAX_FOLLOWUP_QUESTIONS
                     }
-        else:
-            # 檢查是否為續問
-            if user_id in user_sessions and user_sessions[user_id]["remaining"] > 0:
-                session = user_sessions[user_id]
-                print(f"Processing followup question for user {user_id}, remaining: {session['remaining']}")
-                
-                # 顯示 loading 動畫
-                chat_id = event.source.user_id if hasattr(event.source, 'user_id') else event.source.group_id if hasattr(event.source, 'group_id') else event.source.room_id
-                show_loading_animation(chat_id)
-                
-                # 使用原始內容回答續問
-                system_messages = [
-                    {
-                        "role": "system",
-                        "content": f"你是一個專業的內容分析助手。以下是【{session['title']}】的完整內容：\n\n{session['content']}\n\n請根據以上內容，用繁體中文回答使用者的問題。回答要準確、具體，並引用原文相關部分。"
-                    }
-                ]
-                
-                answer = chain_response(system_messages, msg, llm_base_url, llm_api_key, llm_model, llm_max_tokens)
-                session["remaining"] -= 1
-                
-                remaining_text = f"\n\n📊 剩餘續問次數: {session['remaining']}"
-                if session["remaining"] == 0:
-                    remaining_text += "\n\n💬 續問次數已用完，請提供新的網址開始新的對話。"
-                    del user_sessions[user_id]  # 清除會話
-                
-                full_reply = answer + remaining_text
-                send_chunked_reply(event.reply_token, user_id, full_reply)
-            else:
-                reply = "請提供有效的影音網站連結或普通網頁網址，我將為您生成摘要！\n\n支援的影音網站包括：YouTube、Vimeo、Bilibili、Dailymotion、TikTok、Twitch、Facebook、Instagram、Twitter 等 1000+ 網站"
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-    except Exception as e:
-        reply = f"發生錯誤: {str(e)}"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                return
 
-def send_chunked_reply(reply_token, user_id, text):
+        # 4. 續問功能處理
+        async with user_sessions_lock:
+            session = user_sessions.get(user_id)
+
+        if session and session.get("remaining", 0) > 0:
+            await show_loading_animation_async(to_id, 30)
+            system_messages = [
+                {
+                    "role": "system",
+                    "content": f"你是一個專業的內容分析助手。以下是【{session['title']}】的完整內容：\n\n{session['content']}\n\n請根據以上內容，用繁體中文回答使用者的問題。回答要準確、具體，並引用原文相關部分。"
+                }
+            ]
+            answer = await chain_response_async(system_messages, msg)
+
+            async with user_sessions_lock:
+                session["remaining"] -= 1
+                rem = session["remaining"]
+                if rem == 0:
+                    del user_sessions[user_id]
+
+            rem_text = f"\n\n📊 剩餘續問次數: {rem}"
+            if rem == 0:
+                rem_text += "\n\n💬 續問次數已用完，請提供新的網址開始新的對話。"
+
+            full_reply = answer + rem_text
+            await send_response_async(to_id, full_reply, reply_token)
+            return
+
+        # 5. 預設說明回應
+        default_help = (
+            "🤖 **LINE 智能摘要與資產助手**\n\n"
+            "📌 **使用方式**：\n"
+            "1. 傳送任何 **YouTube、Bilibili、TikTok 等 1000+ 影音連結** 或 **普通網頁文章**，自動生成結構化繁體中文摘要並支援 5 次續問。\n"
+            "2. 輸入 `!img [提示詞]` 生成高畫質 AI 圖片。\n"
+            "3. 輸入 `!box` 即時查詢 888box 雲端儲存空間狀態與資產計數。"
+        )
+        await send_response_async(to_id, default_help, reply_token)
+
+    except Exception as e:
+        logger.error(f"Error handling event for {user_id}: {e}", exc_info=True)
+        await send_response_async(to_id, f"⚠️ 處理請求時發生錯誤: {str(e)}", reply_token)
+
+# ----------------------------------------------------------------------
+# FastAPI 路由端點
+# ----------------------------------------------------------------------
+@app.get("/")
+async def root():
+    return {
+        "status": "online",
+        "service": "LINE Bot Smart Summary & Media Bot",
+        "version": "3.0.0",
+        "async_pipeline": "enabled",
+        "storage_endpoints": [
+            "https://box.david888.com (Primary)",
+            "https://box.glsoft.ai (Fallback 1)",
+            "https://box.aiurl.tw (Fallback 2)"
+        ]
+    }
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+@app.post("/callback")
+async def callback(request: Request, background_tasks: BackgroundTasks):
     """
-    將長文本分段發送，確保每段不超過 LINE 的字元限制
+    LINE Webhook 回呼入口點。
+    🚀 即刻回應 200 OK (< 30ms)，所有繁重工作透過 BackgroundTasks 非同步分派，徹底消除多用戶併發塞車問題！
     """
-    MAX_CHAR_LENGTH = 2000  # LINE 的字元限制
-    
-    # 如果文本長度小於最大限制，直接發送
-    if len(text) <= MAX_CHAR_LENGTH:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=text))
-        return
-    
-    chunks = []
-    for i in range(0, len(text), MAX_CHAR_LENGTH):
-        chunk = text[i:i + MAX_CHAR_LENGTH]
-        # 為每個分段添加頁碼（除了第一頁）
-        if i > 0:
-            chunk = f"【續 {i//MAX_CHAR_LENGTH + 1}】\n{chunk}"
-        chunks.append(chunk)
-    
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=chunks[0]))
-    
-    for chunk in chunks[1:]:
-        line_bot_api.push_message(user_id, TextSendMessage(text=chunk))
+    signature = request.headers.get('X-Line-Signature', '')
+    body = await request.body()
+    body_str = body.decode('utf-8')
+
+    try:
+        events = parser.parse(body_str, signature)
+    except InvalidSignatureError:
+        logger.warning("Invalid LINE webhook signature")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        logger.error(f"Webhook parse error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    for event in events:
+        if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
+            # 非同步排程背景任務，立即釋放 HTTP 回應連線
+            background_tasks.add_task(handle_message_event_async, event)
+
+    # 迅速回傳 200 OK 給 LINE Webhook 伺服器
+    return JSONResponse(content={"status": "ok"}, status_code=200)
+
+async def _periodic_ytdlp_update():
+    """定期自動更新 yt-dlp 保持最新版本"""
+    while True:
+        try:
+            logger.info("Checking and upgrading yt-dlp to latest version...")
+            import sys
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "pip", "install", "--no-cache-dir", "-U", "--pre", "yt-dlp[default]",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                logger.info("yt-dlp auto-update check completed successfully.")
+            else:
+                logger.warning(f"yt-dlp auto-update warning: {stderr.decode()}")
+        except Exception as e:
+            logger.warning(f"Failed to auto-update yt-dlp: {e}")
+        # 每 24 小時檢查一次
+        await asyncio.sleep(86400)
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(_periodic_ytdlp_update())
 
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    uvicorn.run(app, host='0.0.0.0', port=port)

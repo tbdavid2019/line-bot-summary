@@ -1,0 +1,35 @@
+# 更新日誌 (CHANGELOG)
+
+本專案的所有重要異動都會記錄於此文件中。
+記錄格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.0.0/)。
+
+---
+
+## [Unreleased]
+
+## [2026-08-27]
+### Changed
+- **全面升級高併發非同步架構 ([`app.py`](app.py))**：
+  - 核心由舊版同步 Flask 重構為 **FastAPI + 非同步 I/O + 執行緒池 (Thread Pool)** 架構。
+  - **即刻 Webhook 回應機制 (Instant ACK)**：Webhook 收到訊息後立即於 30ms 內回傳 HTTP 200 `{"status": "ok"}` 給 LINE，繁重處理完全透過 `BackgroundTasks` 非同步分派，徹底根除多人同時使用造成的連線超時與塞車。
+  - **非同步非阻塞管線**：
+    - LLM API 與 Whisper API 客戶端全面換用 `httpx.AsyncClient`。
+    - `yt-dlp` 影音下載、`ffmpeg` 轉檔、`trafilatura` 網頁爬取全面透過 `asyncio.to_thread` 卸載至執行緒池，避免凍結主事件迴圈。
+    - 支援執行緒安全的用戶續問對話狀態管理 (`asyncio.Lock`)。
+  - **部署容器升級 ([`Dockerfile`](Dockerfile))**：
+    - 採用 Gunicorn + 多 Worker `uvicorn.workers.UvicornWorker`（預設 4 Workers）以支援高併發負載。
+  - **依賴升級 ([`requirements.txt`](requirements.txt))**：
+    - 新增 `fastapi`, `uvicorn[standard]`, `httpx`, `line-bot-sdk>=3.11.0`。
+
+### Added
+- **888box 雲端多端點儲存模組 ([`src/box_storage.py`](src/box_storage.py))**：
+  - 支援產出檔案 (`file`)、圖片 (`image`)、影音源 (`video`/`audio`)、純文字摘要/逐字稿 (`txt`) 與遠端 URL 轉存上傳。
+  - 實作三端點自動容錯備援機制（主要：`https://box.david888.com`，備援 1：`https://box.glsoft.ai`，備援 2：`https://box.aiurl.tw`）。
+  - 提供同步與非同步介面，以及資產列表、關鍵字搜尋、刪除與統計查詢功能。
+- **LINE 機器人指令支援**：
+  - 新增 `!box`、`!stats`、`!空間` 指令以即時查詢 888box 儲存庫狀態與資產計數。
+  - 整合 AI 圖片生成 (`!img`) 與儲存流程，生成之圖片直接非同步上傳至 888box 儲存庫並支援 GCS 備援。
+- **文件與規範建立**：
+  - 建立專案代理人規範文件 [`AGENTS.md`](AGENTS.md)，規範後續異動主動更新 `CHANGELOG.md` 與 `README.md`。
+  - 更新 [`MIGRATION_GUIDE.md`](MIGRATION_GUIDE.md) 詳細解說非同步架構演進與效益。
+  - 同步更新 [`README.md`](README.md) 功能特色、技術架構與環境變數說明。

@@ -47,6 +47,16 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 - 📊 每次回答後顯示剩餘續問次數
 - 🔄 傳送新網址即重置對話，開始新的摘要
 
+### 📦 雲端資產儲存庫 (888box API)
+- ☁️ **多端點容錯儲存**：產出的檔案、生成圖片、下載影音源或逐字稿 txt 皆可上傳至雲端儲存。
+- 🔄 **自動切換機制**：
+  - **主要端點**：`https://box.david888.com`
+  - **備援端點 (Fallback 1)**：`https://box.glsoft.ai`
+  - **備援端點 (Fallback 2)**：`https://box.aiurl.tw`
+- 💬 **LINE 指令支援**：
+  - 輸入 `!box`、`!stats` 或 `!空間` 即時查詢雲端儲存空間狀態與資產計數。
+  - 輸入 `!img [提示詞]` 生成圖片並自動上傳至雲端儲存。
+
 ### ⏳ 即時回饋
 - 🔄 **Loading 動畫** - 處理網址時自動顯示載入動畫（最長 60 秒）
 - 💬 讓使用者知道系統正在處理中，提升使用體驗
@@ -55,6 +65,10 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 
 本專案 fork 自 https://github.com/Achiwilms/LINE-NEWS-Bot
 已做大幅更改：
+- 🚀 **全面升級高併發非同步架構 (FastAPI + Uvicorn Worker + BackgroundTasks)**：
+  - Webhook 收到訊息立即於 **< 30ms** 內回傳 HTTP 200，繁重任務透過背景非同步執行，徹底解決多人併發塞車與逾時問題。
+  - 所有 CPU/硬碟/網路阻塞任務（`yt-dlp` 下載、`ffmpeg` 影音轉檔、`trafilatura` 網頁抓取）均透過 `asyncio.to_thread` 卸載至背景執行緒池。
+  - LLM 與 Whisper 均改採 `httpx` 非同步高效客戶端。
 - ✅ 去除 monogoDB 依賴
 - ✅ 去除 langchain memory 
 - ✅ 新增 **yt-dlp** 支援，擴展至 1000+ 影音網站
@@ -62,15 +76,12 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 - ✅ 雙重檢測機制，避免誤判
 - ✅ 支援字幕提取和音頻轉錄備援
 - ✅ 更改 prompt，產出更易懂的摘要
-- ✅ 改用 Docker 容器化部署
-- ✅ **續問功能** - 支援針對同一內容最多 5 次續問
-- ✅ **Loading 動畫** - 處理時顯示即時回饋
+- ✅ 改用 Docker 容器化部署（多 Worker Uvicorn）
+- ✅ **續問功能** - 支援針對同一內容最多 5 次續問（執行緒安全對話狀態管理）
+- ✅ **Loading 動畫** - 處理時非同步發送即時回饋
 - ✅ **彈性 API 配置** - 自動補全 API 路徑，相容 OpenAI 格式 API
+- ✅ **888box 雲端儲存模組 (`src/box_storage.py`)** - 提供同步/非同步檔案、圖片、影音、文字上傳與遠端 URL 轉存，支援三端點自動容錯。
 - ✅ **Python 3.13** - 升級至最新 Python 版本
-
-
-
-
 
 ## 🚀 環境設置
 
@@ -92,6 +103,11 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
 #### Whisper API 設定（音頻轉錄）
 - **WHISPER_API_KEY** - Whisper API 密鑰
 - **WHISPER_BASE_URL** - Whisper API URL（預設：`https://api.openai.com/v1/audio/transcriptions`）
+
+#### 888box 雲端儲存設定（選填）
+- **BOX_BASE_URL** - 主要端點（預設：`https://box.david888.com`）
+- **BOX_ENDPOINTS** - 逗號分隔多端點清單（預設：`https://box.david888.com,https://box.glsoft.ai,https://box.aiurl.tw`）
+- **BOX_API_TOKEN** - API Token（選填，用於受保護操作）
 
 #### 其他設定
 - **PORT** - 服務運行埠號（預設：`5000`）

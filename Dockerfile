@@ -7,9 +7,10 @@ WORKDIR /app
 # Copy the current directory contents into the container at /app
 COPY . /app
 
-# Install any needed packages specified in requirements.txt
+# Install system dependencies (ffmpeg)
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
+# Install python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 RUN python3 -m pip install -U --pre "yt-dlp[default]"
 
@@ -20,5 +21,5 @@ EXPOSE 5000
 # Define environment variable in key=value format
 ENV NAME=World
 
-# Run app.py when the container launches
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "--timeout", "300", "--workers", "1", "--worker-class", "sync", "--max-requests", "100", "--max-requests-jitter", "10", "app:app"]
+# Run high-concurrency async FastAPI with Gunicorn + UvicornWorker
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "-k", "uvicorn.workers.UvicornWorker", "--workers", "4", "--timeout", "300", "--max-requests", "1000", "--max-requests-jitter", "100", "app:app"]
