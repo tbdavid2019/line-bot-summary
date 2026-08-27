@@ -4,6 +4,9 @@ import json
 import uuid
 import logging
 import asyncio
+import hmac
+import hashlib
+import base64
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any
 
@@ -14,23 +17,6 @@ from bs4 import BeautifulSoup
 import yt_dlp
 import trafilatura
 import mimetypes
-
-# LINE Bot SDK v3
-from linebot.v3.webhook import WebhookParser
-from linebot.v3.messaging import (
-    AsyncApiClient,
-    AsyncMessagingApi,
-    Configuration,
-    ReplyMessageRequest,
-    PushMessageRequest,
-    TextMessage,
-    ImageMessage
-)
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.webhooks import (
-    MessageEvent,
-    TextMessageContent
-)
 
 # 888box 雲端多端點儲存模組
 from src.box_storage import (
@@ -78,9 +64,6 @@ if not channel_secret:
 if not channel_access_token:
     logger.warning("CHANNEL_ACCESS_TOKEN is not set in environment variables.")
 
-configuration = Configuration(access_token=channel_access_token or "dummy_token")
-parser = WebhookParser(channel_secret or "dummy_secret")
-line_bot_api = AsyncMessagingApi(configuration)
 
 # LLM API 配置
 llm_base_url_raw = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1')
@@ -439,10 +422,14 @@ async def generate_image_with_gemini_async(prompt: str) -> Tuple[bool, str]:
 # ----------------------------------------------------------------------
 async def send_response_async(to_id: str, text: str, reply_token: Optional[str] = None):
     """
-    發送訊息至使用者或群組。
+    發送文字訊息至使用者或群組。
     優先嘗試 reply_token 回覆，若失敗或過期則自動使用 push_message 發送。
     自動將超過 2000 字元的長文本分段發送。
+    採用原生非同步 HTTP (httpx)，完全獨立於 SDK 事件迴圈生命週期，具備極高可靠度。
     """
+    if not channel_access_token or not text:
+        return
+
     MAX_LEN = 2000
     chunks = []
     for i in range(0, len(text), MAX_LEN):
@@ -454,47 +441,103 @@ async def send_response_async(to_id: str, text: str, reply_token: Optional[str] 
     if not chunks:
         return
 
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {channel_access_token}"
+    }
+
     # 嘗試第一則使用 reply_token
     replied = False
     if reply_token:
         try:
-            await line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text=chunks[0])]
-                )
-            )
-            replied = True
+            payload = {
+                "replyToken": reply_token,
+                "messages": [{"type": "text", "text": chunks[0]}]
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=payload)
+                if resp.status_code == 200:
+                    replied = True
+                else:
+                    logger.debug(f"Reply with token failed ({resp.status_code}: {resp.text}), falling back to push_message")
         except Exception as e:
-            logger.debug(f"Reply with token failed ({e}), falling back to push_message")
+            logger.debug(f"Reply with token exception ({e}), falling back to push_message")
 
     start_idx = 1 if replied else 0
     for chunk in chunks[start_idx:]:
+        if not to_id:
+            continue
         try:
-            await line_bot_api.push_message(
-                PushMessageRequest(
-                    to=to_id,
-                    messages=[TextMessage(text=chunk)]
-                )
-            )
+            payload = {
+                "to": to_id,
+                "messages": [{"type": "text", "text": chunk}]
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
+                if resp.status_code != 200:
+                    logger.error(f"Push message failed for {to_id} ({resp.status_code}: {resp.text})")
         except Exception as e:
-            logger.error(f"Push message failed for {to_id}: {e}")
+            logger.error(f"Push message exception for {to_id}: {e}")
+
+async def send_image_async(to_id: str, image_url: str, reply_token: Optional[str] = None):
+    """發送圖片訊息給使用者"""
+    if not channel_access_token or not image_url:
+        return
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {channel_access_token}"
+    }
+    img_msg = {
+        "type": "image",
+        "originalContentUrl": image_url,
+        "previewImageUrl": image_url
+    }
+
+    replied = False
+    if reply_token:
+        try:
+            payload = {"replyToken": reply_token, "messages": [img_msg]}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=payload)
+                if resp.status_code == 200:
+                    replied = True
+        except Exception as e:
+            logger.debug(f"Image reply failed: {e}")
+
+    if not replied and to_id:
+        try:
+            payload = {"to": to_id, "messages": [img_msg]}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
+        except Exception as e:
+            logger.error(f"Image push failed: {e}")
 
 # ----------------------------------------------------------------------
 # 非同步事件處理核心 (Worker Pipeline)
 # ----------------------------------------------------------------------
-async def handle_message_event_async(event: MessageEvent):
+async def handle_message_event_async(event: Any):
     """
     背景非同步處理各類 LINE 訊息事件。
     在背景任務中執行，完全不阻擋 LINE Webhook 200 OK 回應！
+    支援原生 dict 與 SDK Event 物件。
     """
-    source = event.source
-    to_id = source.group_id if hasattr(source, 'group_id') and source.group_id else (
-        source.room_id if hasattr(source, 'room_id') and source.room_id else source.user_id
-    )
-    user_id = source.user_id if hasattr(source, 'user_id') else to_id
-    msg = event.message.text.strip()
-    reply_token = event.reply_token
+    if isinstance(event, dict):
+        source = event.get('source', {})
+        to_id = source.get('groupId') or source.get('roomId') or source.get('userId') or ''
+        user_id = source.get('userId') or to_id
+        msg_obj = event.get('message', {})
+        msg = str(msg_obj.get('text', '')).strip()
+        reply_token = event.get('replyToken')
+    else:
+        source = getattr(event, 'source', None)
+        to_id = getattr(source, 'group_id', None) or getattr(source, 'room_id', None) or getattr(source, 'user_id', '')
+        user_id = getattr(source, 'user_id', to_id)
+        msg = str(getattr(getattr(event, 'message', None), 'text', '')).strip()
+        reply_token = getattr(event, 'reply_token', None)
+
+    if not msg:
+        return
 
     logger.info(f"Processing message from {user_id} in {to_id}: {msg[:50]}")
 
@@ -535,12 +578,7 @@ async def handle_message_event_async(event: MessageEvent):
             await show_loading_animation_async(to_id, 60)
             success, result = await generate_image_with_gemini_async(prompt)
             if success:
-                try:
-                    img_msg = ImageMessage(original_content_url=result, preview_image_url=result)
-                    await line_bot_api.push_message(PushMessageRequest(to=to_id, messages=[img_msg]))
-                except Exception as img_err:
-                    logger.error(f"Failed to send image message: {img_err}")
-                    await send_response_async(to_id, f"🎨 圖片生成成功，但發送失敗。圖片網址：{result}")
+                await send_image_async(to_id, result, reply_token)
             else:
                 await send_response_async(to_id, result, reply_token)
             return
@@ -664,20 +702,28 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
     """
     signature = request.headers.get('X-Line-Signature', '')
     body = await request.body()
-    body_str = body.decode('utf-8')
 
+    # 1. 驗證簽章 (HMAC-SHA256)
+    if channel_secret:
+        hash_val = hmac.new(channel_secret.encode('utf-8'), body, hashlib.sha256).digest()
+        computed_sig = base64.b64encode(hash_val).decode('utf-8')
+        if not hmac.compare_digest(computed_sig, signature):
+            logger.warning(f"Invalid LINE webhook signature. Received: {signature}")
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+    # 2. 解析 JSON 內容
     try:
-        events = parser.parse(body_str, signature)
-    except InvalidSignatureError:
-        logger.warning("Invalid LINE webhook signature")
-        raise HTTPException(status_code=400, detail="Invalid signature")
+        body_str = body.decode('utf-8')
+        body_json = json.loads(body_str)
+        events = body_json.get('events', [])
     except Exception as e:
         logger.error(f"Webhook parse error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+    # 3. 分派事件
     for event in events:
-        if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
-            # 非同步排程背景任務，立即釋放 HTTP 回應連線
+        if event.get('type') == 'message' and event.get('message', {}).get('type') == 'text':
+            logger.info(f"Enqueuing message event: {event.get('webhookEventId') or 'event'}")
             background_tasks.add_task(handle_message_event_async, event)
 
     # 迅速回傳 200 OK 給 LINE Webhook 伺服器

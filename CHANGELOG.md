@@ -21,6 +21,11 @@
   - **依賴升級 ([`requirements.txt`](requirements.txt))**：
     - 新增 `fastapi`, `uvicorn[standard]`, `httpx`, `line-bot-sdk>=3.11.0`。
 
+### Fixed
+- **LINE Webhook 解析與訊息傳送通道強化**：
+  - 改用原生 RFC-compliant HMAC-SHA256 簽章驗證與原生 JSON 事件分派，解決 `line-bot-sdk` v3 因 Pydantic 嚴格型別校驗失敗（如缺少 `quoteToken` / `deliveryContext`）導致之 `UnknownEvent` 訊息遺失問題。
+  - 將 LINE 回覆與推播全面升級為原生非同步 `httpx.AsyncClient` 雙通道發送（優先 Reply Token，超時或失效自動切換 Push Message），解決多 Worker Gunicorn 環境下 `AsyncApiClient` 跨程序事件迴圈失效問題。
+
 ### Added
 - **888box 雲端多端點儲存模組 ([`src/box_storage.py`](src/box_storage.py))**：
   - 支援產出檔案 (`file`)、圖片 (`image`)、影音源 (`video`/`audio`)、純文字摘要/逐字稿 (`txt`) 與遠端 URL 轉存上傳。
