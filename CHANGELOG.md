@@ -9,6 +9,9 @@
 
 ## [2026-08-28]
 ### Added
+- **David888 Wiki 知識庫發布執行器與官方技術白皮書 ([`src/agent_tools.py`](src/agent_tools.py), [`wiki_article.md`](wiki_article.md), [`README.md`](README.md))**：
+  - 新增 `wiki_publish` 執行器工具，支援 LLM 自主將精華摘要、研究報告一鍵發布至 `wiki.david888.com`，生成永久公開 Markdown 與 2D 簡報連結。
+  - 官方技術白皮書已公開上線：[https://wiki.david888.com/share/wcfm7e](https://wiki.david888.com/share/wcfm7e)（簡報模式：[https://wiki.david888.com/share/wcfm7e/present](https://wiki.david888.com/share/wcfm7e/present)）。
 - **LINE 零中斷超時保護（SafeReply ➔ Push Fallback）全時守護體系 ([`app.py`](app.py), [`README.md`](README.md))**：
   - 詳細解析「即刻 ACK (<30ms) ➔ BackgroundTasks 背景池 ➔ SafeReply/Push 雙保險」三層訊息交付架構。
   - 確保無論影音轉錄或多輪 Agent 檢索耗時多久（超過 30 秒），系統皆能自動降級切換 `pushMessage` 強制精準送達，實現零掉訊息、零超時中斷。

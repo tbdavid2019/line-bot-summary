@@ -91,26 +91,29 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "box_storage_action",
-            "description": "888box 雲端多端點儲存操作。支援查看儲存空間統計 (`stats`)、或將重要文字筆記/摘要上傳存檔 (`upload_text`)。",
+            "name": "wiki_publish",
+            "description": "將整理好的摘要、文章、研究筆記或多媒體報告發布至 David888 Wiki 知識庫 (wiki.david888.com)，生成永久公開閱讀的 Markdown 與 2D 簡報連結。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {
+                    "title": {
                         "type": "string",
-                        "enum": ["stats", "upload_text"],
-                        "description": "操作類型：'stats' 查詢空間狀態；'upload_text' 上傳文字檔案"
+                        "description": "文章標題（例如：SpaceX 星艦發射深度分析、台積電法說會重點摘要）"
                     },
-                    "text": {
+                    "markdown_content": {
                         "type": "string",
-                        "description": "當 action 為 'upload_text' 時必填，欲儲存的文字內容"
+                        "description": "欲發布的完整 Markdown 格式內容（支援 Mermaid 圖表、表格、列表等）"
                     },
-                    "filename": {
+                    "path": {
                         "type": "string",
-                        "description": "當 action 為 'upload_text' 時的檔名（例如 summary.md 或 note.txt）"
+                        "description": "自訂網址路徑別名（英文/數字/連字號，如 starship-2026 或 tsmc-q3-summary，留空則自動生成）"
+                    },
+                    "theme": {
+                        "type": "string",
+                        "description": "Wiki 主題樣式，可選：claude-canvas (推薦), notion-clean, retro, tokyo-night, bauhaus, terminal"
                     }
                 },
-                "required": ["action"]
+                "required": ["title", "markdown_content"]
             }
         }
     }
@@ -190,6 +193,33 @@ class AgentActuators:
                     res = await upload_text_async(text, filename)
                     return json.dumps(res, ensure_ascii=False), extra_meta
                 return f"不支援的操作: {action}", extra_meta
+
+            elif name == "wiki_publish":
+                title = arguments.get("title", "未命名文章").strip()
+                md_content = arguments.get("markdown_content", "").strip()
+                import uuid
+                slug = arguments.get("path", "").strip() or f"note-{uuid.uuid4().hex[:8]}"
+                theme = arguments.get("theme", "claude-canvas")
+                
+                # 遵循 Wiki 規範：第一行必須是 # Title
+                if not md_content.startswith("#"):
+                    full_md = f"# {title}\n\n{md_content}"
+                else:
+                    full_md = md_content
+                    
+                wiki_api_url = f"https://wiki.david888.com/api/{slug}?public=true&theme={theme}"
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        wiki_api_url,
+                        headers={"Content-Type": "text/markdown; charset=UTF-8"},
+                        content=full_md.encode("utf-8")
+                    )
+                    res_data = resp.json()
+                    share_url = res_data.get("data", {}).get("shareUrl", "")
+                    if share_url:
+                        return f"✅ 成功發布至 David888 Wiki！\n📖 公開閱讀連結: {share_url}\n📽️ 2D 簡報模式: {share_url}/present", extra_meta
+                    else:
+                        return f"❌ 發布失敗: {res_data.get('msg', '未知錯誤')}", extra_meta
 
             else:
                 return f"未知工具: {name}", extra_meta

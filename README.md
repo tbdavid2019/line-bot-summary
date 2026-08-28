@@ -118,6 +118,7 @@ flowchart TD
         T3["🎥 video_transcribe<br/>(yt-dlp + Gemini 音訊轉錄)"]
         T4["🎨 generate_image<br/>(Gemini/Imagen AI 生圖)"]
         T5["📦 box_storage_action<br/>(888box 雲端多端點存儲)"]
+        T6["📖 wiki_publish<br/>(David888 Wiki 知識庫發布)"]
     end
     
     Dispatcher --> Actuators
@@ -127,8 +128,11 @@ flowchart TD
 
 ### 🎯 核心優勢與能力
 1. **擺脫死記指令**：使用者無需輸入前綴（如 `!s`、`!img`、`!box`），直接用自然語言表達需求即可。
-2. **多工具鏈式調用**：支援單次請求中自主觸發多個工具（例如：*「先幫我搜尋 SpaceX 星艦發射台的最新消息，並為它生成一張未來太空基地的概念插圖」*）。
-3. **極速通道相容 (Fast-Track)**：當使用者僅傳送單一網址時，自動進入 5 段式結構化極速摘要模式，兼具速度與深度。
+2. **多工具鏈式調用**：支援單次請求中自主觸發多個工具（例如：*「先幫我搜尋 SpaceX 星艦發射台的最新消息，並為它生成一張概念插圖，最後發布到 Wiki」*）。
+3. **David888 Wiki 知識庫發布**：支援一鍵將對話摘要或研究成果發布至 `wiki.david888.com`，生成永久公開閱讀與 2D 簡報連結。
+4. **極速通道相容 (Fast-Track)**：當使用者僅傳送單一網址時，自動進入 5 段式結構化極速摘要模式，兼具速度與深度。
+
+📖 **官方技術白皮書**：[https://wiki.david888.com/share/wcfm7e](https://wiki.david888.com/share/wcfm7e)（2D 簡報模式：[https://wiki.david888.com/share/wcfm7e/present](https://wiki.david888.com/share/wcfm7e/present)）
 
 ## 🛡️ LINE 零中斷超時保護（SafeReply ➔ Push Fallback）全時守護
 
