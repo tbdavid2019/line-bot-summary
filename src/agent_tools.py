@@ -208,7 +208,7 @@ async def run_agentic_loop_async(
     llm_api_key: str,
     llm_base_url: str,
     llm_model: str = "gemini-3.6-flash",
-    max_steps: int = 5
+    max_steps: int = 4
 ) -> Tuple[str, List[str]]:
     """
     執行 LLM 自主意圖解構與 Tool Calling 迴圈。
@@ -219,13 +219,18 @@ async def run_agentic_loop_async(
         "Content-Type": "application/json",
     }
     
-    # 確保 API 端點完整
     endpoint = llm_base_url
     if not endpoint.endswith("/chat/completions"):
         endpoint = endpoint.rstrip("/") + "/chat/completions"
 
+    user_query = ""
+    for m in messages:
+        if m.get("role") == "user":
+            user_query = m.get("content", "")
+
     current_messages = list(messages)
     generated_images: List[str] = []
+    gathered_tool_results: List[str] = []
 
     for step in range(max_steps):
         payload = {
@@ -243,6 +248,8 @@ async def run_agentic_loop_async(
                 data = resp.json()
         except Exception as e:
             logger.error(f"Agent LLM API request failed: {e}")
+            if gathered_tool_results:
+                break
             return f"⚠️ LLM 代理思考時發生錯誤: {str(e)}", generated_images
 
         choice = data["choices"][0]
@@ -250,14 +257,15 @@ async def run_agentic_loop_async(
         tool_calls = msg.get("tool_calls")
         content = msg.get("content")
 
-        # 若模型決定直接回覆（無更多工具呼叫）
+        # 若模型已產出文字且沒有新的工具呼叫
         if not tool_calls:
             return (content.strip() if content else "（已完成處理）"), generated_images
 
-        # 將 assistant 的 tool_calls 意圖訊息加入對話歷史
+        # 記錄 assistant 訊息
         current_messages.append(msg)
 
         # 執行所有被觸發的工具
+        executed_any = False
         for tc in tool_calls:
             call_id = tc.get("id", "call_default")
             fn = tc.get("function", {})
@@ -269,29 +277,58 @@ async def run_agentic_loop_async(
                 args = {}
 
             tool_result, meta = await actuators.execute_tool_async(fn_name, args)
+            executed_any = True
+            gathered_tool_results.append(f"【工具 {fn_name} 執行結果】:\n{tool_result}")
 
             if "generated_image_url" in meta:
                 img_url = meta["generated_image_url"]
                 if img_url not in generated_images:
                     generated_images.append(img_url)
 
-            # 將工具執行結果加入對話歷史中
             current_messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,
                 "content": tool_result
             })
 
-    # 若達到最大步數，進行最後一次總結收尾
-    final_payload = {
-        "model": llm_model,
-        "messages": current_messages,
-        "temperature": 0.4,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            final_resp = await client.post(endpoint, headers=headers, json=final_payload)
-            final_data = final_resp.json()
-            return final_data["choices"][0]["message"]["content"].strip(), generated_images
-    except Exception as e:
-        return "⚠️ 已完成工具調度與資料收集。", generated_images
+        if not executed_any:
+            break
+
+        # 針對搜尋/閱讀/轉錄類工具，收集完即刻進行總結，避免無限工具調用
+        if any(tc.get("function", {}).get("name") in ["web_search", "web_read_markdown", "video_transcribe"] for tc in tool_calls):
+            break
+
+    # 綜合工具執行結果進行最終智慧總結
+    if gathered_tool_results:
+        synthesis_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一個具備自主意圖解構與即時工具執行力的頂級繁體中文 AI 助理。\n"
+                    "請根據以下透過執行器（Actuators）即時檢索或執行的真實現場資料，針對使用者的原始問題與需求給出客觀、準確、專業、條理分明的完整解答。\n"
+                    "【鐵律】\n"
+                    "1. 嚴格遵守零幻覺與即時檢索鐵律，所有數據與最新動態必須根據現場檢索資料回答。\n"
+                    "2. 若有來源網址或具體數據，請在回答中清晰標註與引用。"
+                )
+            },
+            {
+                "role": "user",
+                "content": f"使用者需求：【{user_query}】\n\n" + "\n\n".join(gathered_tool_results)
+            }
+        ]
+        try:
+            synth_payload = {
+                "model": llm_model,
+                "messages": synthesis_messages,
+                "temperature": 0.4,
+            }
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                synth_resp = await client.post(endpoint, headers=headers, json=synth_payload)
+                synth_resp.raise_for_status()
+                synth_data = synth_resp.json()
+                return synth_data["choices"][0]["message"]["content"].strip(), generated_images
+        except Exception as e:
+            logger.error(f"Synthesis failed: {e}")
+            return "\n\n".join(gathered_tool_results), generated_images
+
+    return "（已完成所有工具調度與操作）", generated_images
