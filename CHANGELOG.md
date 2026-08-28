@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [2026-08-28]
+### Added
+- **對話狀態與 Session 記憶機制 Know-How 文檔 ([`README.md`](README.md))**：
+  - 詳細記錄主題式輕量級上下文注入（Topic-based In-Memory Context Injection）設計哲學與重構歷程。
+  - 繪製 Mermaid 流程圖說明 Session 建立、5 次連續深度追問、自動釋放與主題覆蓋之完整生命週期管理。
+  - 闡述 In-Memory 字典 + `asyncio.Lock` 高併發執行緒安全架構及未來擴充指引。
+
 ## [2026-08-27]
 ### Changed
 - **全面升級高併發非同步架構 ([`app.py`](app.py))**：
