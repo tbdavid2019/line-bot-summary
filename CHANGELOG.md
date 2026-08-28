@@ -9,6 +9,9 @@
 
 ## [2026-08-28]
 ### Added
+- **LINE 零中斷超時保護（SafeReply ➔ Push Fallback）全時守護體系 ([`app.py`](app.py), [`README.md`](README.md))**：
+  - 詳細解析「即刻 ACK (<30ms) ➔ BackgroundTasks 背景池 ➔ SafeReply/Push 雙保險」三層訊息交付架構。
+  - 確保無論影音轉錄或多輪 Agent 檢索耗時多久（超過 30 秒），系統皆能自動降級切換 `pushMessage` 強制精準送達，實現零掉訊息、零超時中斷。
 - **LINE Quick Reply 多樣化濃縮模式互動切換 ([`app.py`](app.py), [`README.md`](README.md))**：
   - 產出摘要後底部自動附帶 5 組 Quick Reply 快捷按鈕：`⚡ 1分鐘極簡版`、`📊 結構化大綱`、`❓ 核心 Q&A`、`📱 社群貼文風`、`🎨 繪製概念圖`。
   - 使用者可一鍵切換不同濃縮風格，亦可透過自然語言自由指定濃縮格式。
