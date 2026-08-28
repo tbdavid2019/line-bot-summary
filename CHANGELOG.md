@@ -9,6 +9,10 @@
 
 ## [2026-08-28]
 ### Added
+- **CI/CD 部署強化與 Docker Compose / Chrome 容器生態整合 ([`docker-compose.yml`](docker-compose.yml), [`setup_chrome_container.sh`](setup_chrome_container.sh), [`build.sh`](build.sh), [`README.md`](README.md))**：
+  - 新增 `docker-compose.yml` 支援一鍵 `docker compose up -d` 部署，標準化 Volume Mount（包含 `cookies.txt`、`app.py`、`src/`）。
+  - 新增 `setup_chrome_container.sh` 快速啟動獨立 Headless Chrome 容器，搭配 `extract_youtube_cookies.sh` 實現 YouTube 最新 Cookies 自動熱同步。
+  - 修正 `build.sh` 鏡像名稱統一為 `tbdavid2019/line-bot-summary:latest`，確保部署主機上的 Watchtower 能夠無縫跟蹤與熱更新。
 - **David888 Wiki 知識庫發布執行器與官方技術白皮書 ([`src/agent_tools.py`](src/agent_tools.py), [`wiki_article.md`](wiki_article.md), [`README.md`](README.md))**：
   - 新增 `wiki_publish` 執行器工具，支援 LLM 自主將精華摘要、研究報告一鍵發布至 `wiki.david888.com`，生成永久公開 Markdown 與 2D 簡報連結。
   - 官方技術白皮書已公開上線：[https://wiki.david888.com/share/wcfm7e](https://wiki.david888.com/share/wcfm7e)（簡報模式：[https://wiki.david888.com/share/wcfm7e/present](https://wiki.david888.com/share/wcfm7e/present)）。

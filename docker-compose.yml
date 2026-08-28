@@ -1,0 +1,16 @@
+services:
+  line-bot-summary:
+    image: tbdavid2019/line-bot-summary:latest
+    container_name: line-bot-summary123
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8111}:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./cookies.txt:/app/cookies.txt
+      - ./app.py:/app/app.py
+      - ./src:/app/src

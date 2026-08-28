@@ -224,10 +224,22 @@ flowchart TD
 - 音頻轉錄 API 金鑰（用於無字幕影片）
 
 
-### 方法一：使用 Docker Hub 雙架構映像檔（推薦）
+### 方法一：使用 Docker Compose 部署（推薦）
+```bash
+# 啟動服務（自動載入 .env 與掛載 cookies.txt / 程式碼）
+docker compose up -d
+
+# 查看運行日誌
+docker compose logs -f
+```
+
+### 方法二：使用 Docker Hub 雙架構映像檔
 本專案支援 GitHub Actions 全自動建置 **雙架構（`linux/amd64` 與 `linux/arm64`）** Docker Image 並自動發布至 Docker Hub。
 
 ```bash
+# 確保本機 cookies.txt 存在
+touch cookies.txt
+
 # 拉取最新雙架構映像檔（自動依主機架構適配 x86 或 ARM64）
 docker pull tbdavid2019/line-bot-summary:latest
 
@@ -241,20 +253,30 @@ docker run -d \
   tbdavid2019/line-bot-summary:latest
 ```
 
-### 方法二：使用本地建置腳本
+### 方法三：使用本地一鍵建置腳本
 ```bash
 # 賦予執行權限並建置啟動
 chmod +x build.sh
 ./build.sh
 ```
 
-### 方法三：手動本地建置
-```bash
-# 建立 Docker image
-docker build -t line-bot-summary .
+### 🍪 YouTube Cookies 自動提取與 Headless Chrome 容器架設
+若伺服器處於機房 IP 環境遭遇 YouTube 嚴格反爬蟲限制，可透過以下步驟建立 Cookie 自動提取機制：
 
-# 啟動容器
-docker run -d -p 8111:5000 --env-file .env --name line-bot-summary123 line-bot-summary
+```bash
+# 1. 一鍵啟動 Chrome 容器
+chmod +x setup_chrome_container.sh
+./setup_chrome_container.sh
+
+# 2. 透過瀏覽器登入 YouTube 產生憑證
+# 開啟瀏覽器訪問 http://<你的伺服器IP>:3000，登入 Google/YouTube 帳號
+
+# 3. 測試手動提取 Cookies
+chmod +x extract_youtube_cookies.sh
+./extract_youtube_cookies.sh
+
+# 4. 加入 crontab 自動排程（每 2 小時自動熱同步）
+# 0 */2 * * * /bin/bash /path/to/line-bot-summary/extract_youtube_cookies.sh >> /path/to/line-bot-summary/cookies_sync.log 2>&1
 ```
 
 ### 方法四：開發模式
