@@ -9,6 +9,9 @@
 
 ## [2026-08-28]
 ### Added
+- **LINE Quick Reply 多樣化濃縮模式互動切換 ([`app.py`](app.py), [`README.md`](README.md))**：
+  - 產出摘要後底部自動附帶 5 組 Quick Reply 快捷按鈕：`⚡ 1分鐘極簡版`、`📊 結構化大綱`、`❓ 核心 Q&A`、`📱 社群貼文風`、`🎨 繪製概念圖`。
+  - 使用者可一鍵切換不同濃縮風格，亦可透過自然語言自由指定濃縮格式。
 - **意圖解構與自主執行架構 (Agentic Actuators) ([`src/agent_tools.py`](src/agent_tools.py), [`app.py`](app.py))**：
   - 實裝 OpenAI/Gemini 相容的 Tool Calling JSON Schema (`AGENT_TOOLS`)，包含 `web_search`、`web_read_markdown`、`video_transcribe`、`generate_image`、`box_storage_action` 五大核心執行器。
   - 實裝 `AgentActuators` 與非同步 ReAct 代理迴圈 (`run_agentic_loop_async`)，支援多工具並發／鏈式連續調用與產物自動聚合（文字回答 + 生成圖片雙通道發送）。

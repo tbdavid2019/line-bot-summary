@@ -522,13 +522,61 @@ actuators = AgentActuators(
 )
 
 # ----------------------------------------------------------------------
-# 非同步訊息分段與發送
 # ----------------------------------------------------------------------
-async def send_response_async(to_id: str, text: str, reply_token: Optional[str] = None):
+# 非同步訊息分段與發送 (支援 LINE Quick Reply 快速切換濃縮方式)
+# ----------------------------------------------------------------------
+def get_summary_quick_reply() -> Dict[str, Any]:
+    """生成濃縮方式切換與深度互動的 LINE Quick Reply 按鈕"""
+    return {
+        "items": [
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "⚡ 1分鐘極簡版",
+                    "text": "請幫我轉成 1 分鐘極簡重點版"
+                }
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "📊 結構化大綱",
+                    "text": "請幫我轉成階層大綱與心智圖結構"
+                }
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "❓ 核心 Q&A",
+                    "text": "請幫我拆解出 5 個最重要的核心問答 (Q&A)"
+                }
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "📱 社群貼文風",
+                    "text": "請幫我轉寫成吸引人的社群推廣貼文（含 Emoji 與 Hashtag）"
+                }
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "🎨 繪製概念圖",
+                    "text": "請根據這篇內容畫一張主題概念插圖"
+                }
+            }
+        ]
+    }
+
+async def send_response_async(to_id: str, text: str, reply_token: Optional[str] = None, quick_reply: Optional[Dict[str, Any]] = None):
     """
     發送文字訊息至使用者或群組。
     優先嘗試 reply_token 回覆，若失敗或過期則自動使用 push_message 發送。
-    自動將超過 2000 字元的長文本分段發送。
+    自動將超過 2000 字元的長文本分段發送，並在末則附帶 Quick Reply 快速操作按鈕。
     採用原生非同步 HTTP (httpx)，完全獨立於 SDK 事件迴圈生命週期，具備極高可靠度。
     """
     if not channel_access_token or not text:
@@ -554,9 +602,12 @@ async def send_response_async(to_id: str, text: str, reply_token: Optional[str] 
     replied = False
     if reply_token:
         try:
+            first_msg: Dict[str, Any] = {"type": "text", "text": chunks[0]}
+            if len(chunks) == 1 and quick_reply:
+                first_msg["quickReply"] = quick_reply
             payload = {
                 "replyToken": reply_token,
-                "messages": [{"type": "text", "text": chunks[0]}]
+                "messages": [first_msg]
             }
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=payload)
@@ -568,13 +619,16 @@ async def send_response_async(to_id: str, text: str, reply_token: Optional[str] 
             logger.debug(f"Reply with token exception ({e}), falling back to push_message")
 
     start_idx = 1 if replied else 0
-    for chunk in chunks[start_idx:]:
+    for idx, chunk in enumerate(chunks[start_idx:], start=start_idx):
         if not to_id:
             continue
         try:
+            msg_obj: Dict[str, Any] = {"type": "text", "text": chunk}
+            if idx == len(chunks) - 1 and quick_reply:
+                msg_obj["quickReply"] = quick_reply
             payload = {
                 "to": to_id,
-                "messages": [{"type": "text", "text": chunk}]
+                "messages": [msg_obj]
             }
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
@@ -676,8 +730,8 @@ async def handle_message_event_async(event: Any):
                 system_prompt = get_summary_prompt()
                 summary = await chain_response_async(system_prompt, transcription)
                 title_display = f"【{video_title}】" if video_title else "【影音內容摘要】"
-                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個內容的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
-                await send_response_async(to_id, full_reply, reply_token)
+                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以點擊下方按鈕切換濃縮風格，或直接輸入問題進行深入續問（剩餘 {MAX_FOLLOWUP_QUESTIONS} 次）"
+                await send_response_async(to_id, full_reply, reply_token, quick_reply=get_summary_quick_reply())
                 async with user_sessions_lock:
                     user_sessions[user_id] = {
                         "content": transcription,
@@ -694,8 +748,8 @@ async def handle_message_event_async(event: Any):
                 system_prompt = get_summary_prompt()
                 summary = await chain_response_async(system_prompt, content)
                 title_display = f"【標題】: {title}" if title else "【網頁內容摘要】"
-                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個內容的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
-                await send_response_async(to_id, full_reply, reply_token)
+                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以點擊下方按鈕切換濃縮風格，或直接輸入問題進行深入續問（剩餘 {MAX_FOLLOWUP_QUESTIONS} 次）"
+                await send_response_async(to_id, full_reply, reply_token, quick_reply=get_summary_quick_reply())
                 async with user_sessions_lock:
                     user_sessions[user_id] = {
                         "content": content,
@@ -714,6 +768,12 @@ async def handle_message_event_async(event: Any):
             "- 若需要轉錄分析影音內容，調用 `video_transcribe`\n"
             "- 若使用者要求畫圖、生成圖片或插圖，調用 `generate_image`\n"
             "- 若需要查詢雲端空間或上傳筆記，調用 `box_storage_action`\n\n"
+            "【風格轉換與濃縮指引】\n"
+            "- 若使用者要求「1分鐘極簡版」：提煉 3 句超精華結論 + 關鍵數據。\n"
+            "- 若使用者要求「結構化大綱/心智圖」：以層級標題與清晰縮排呈現主題樹狀脈絡。\n"
+            "- 若使用者要求「核心 Q&A」：精選 5 個最有價值的問題並給予精準解答。\n"
+            "- 若使用者要求「社群貼文風」：撰寫引人入勝的 Hook、3 個亮點、搭配 Emoji 與 Hashtags。\n"
+            "- 若使用者要求「概念插圖」：調用 `generate_image` 工具生成符合主題的精美插圖。\n\n"
             "【作答原則】\n"
             "1. 必須以流暢、親切、專業、條理分明的繁體中文回答。\n"
             "2. 嚴格遵守零幻覺與即時檢索鐵律，涉及即時數據與事實必須根據工具返回結果作答，並在回答中清楚標註數據來源與參考網址。\n"
@@ -744,8 +804,8 @@ async def handle_message_event_async(event: Any):
         )
 
         # 4. 發送結果給使用者
-        # 先發送文字內容
-        await send_response_async(to_id, answer, reply_token)
+        # 先發送文字內容（附加 Quick Reply 按鈕便於持續切換）
+        await send_response_async(to_id, answer, reply_token, quick_reply=get_summary_quick_reply())
 
         # 若生成了圖片，發送圖片訊息
         for img_url in generated_images:
