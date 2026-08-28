@@ -9,6 +9,11 @@
 
 ## [2026-08-28]
 ### Added
+- **意圖解構與自主執行架構 (Agentic Actuators) ([`src/agent_tools.py`](src/agent_tools.py), [`app.py`](app.py))**：
+  - 實裝 OpenAI/Gemini 相容的 Tool Calling JSON Schema (`AGENT_TOOLS`)，包含 `web_search`、`web_read_markdown`、`video_transcribe`、`generate_image`、`box_storage_action` 五大核心執行器。
+  - 實裝 `AgentActuators` 與非同步 ReAct 代理迴圈 (`run_agentic_loop_async`)，支援多工具並發／鏈式連續調用與產物自動聚合（文字回答 + 生成圖片雙通道發送）。
+  - 使用者無需死記指令前綴，直接以自然語言提問，由 LLM 大腦自主解構意圖並調用執行器完成複合任務。
+  - 保留單一網址極速 5 段式摘要通道（Fast-Track），兼具極致效率與自主靈活性。
 - **對話狀態與 Session 記憶機制 Know-How 文檔 ([`README.md`](README.md))**：
   - 詳細記錄主題式輕量級上下文注入（Topic-based In-Memory Context Injection）設計哲學與重構歷程。
   - 繪製 Mermaid 流程圖說明 Session 建立、5 次連續深度追問、自動釋放與主題覆蓋之完整生命週期管理。

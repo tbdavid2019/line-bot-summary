@@ -35,6 +35,13 @@ from src.web_browser import (
     read_url_markdown_async
 )
 
+# Agentic Tool Calling & Actuators 執行器中樞
+from src.agent_tools import (
+    AGENT_TOOLS,
+    AgentActuators,
+    run_agentic_loop_async
+)
+
 # Google GenAI / GCS (選用備援)
 try:
     from google import genai as genai_v2
@@ -506,6 +513,15 @@ async def generate_image_with_gemini_async(prompt: str) -> Tuple[bool, str]:
         return False, f"❌ 圖片生成失敗: {str(e)}"
 
 # ----------------------------------------------------------------------
+# Agentic Actuators 執行器中樞初始化
+# ----------------------------------------------------------------------
+actuators = AgentActuators(
+    generate_image_fn=generate_image_with_gemini_async,
+    process_video_fn=process_video_url_async,
+    scrape_web_fn=scrape_text_from_url_async,
+)
+
+# ----------------------------------------------------------------------
 # 非同步訊息分段與發送
 # ----------------------------------------------------------------------
 async def send_response_async(to_id: str, text: str, reply_token: Optional[str] = None):
@@ -602,13 +618,13 @@ async def send_image_async(to_id: str, image_url: str, reply_token: Optional[str
             logger.error(f"Image push failed: {e}")
 
 # ----------------------------------------------------------------------
-# 非同步事件處理核心 (Worker Pipeline)
+# 非同步事件處理核心 (Agentic Worker Pipeline)
 # ----------------------------------------------------------------------
 async def handle_message_event_async(event: Any):
     """
     背景非同步處理各類 LINE 訊息事件。
     在背景任務中執行，完全不阻擋 LINE Webhook 200 OK 回應！
-    支援原生 dict 與 SDK Event 物件。
+    支援 LLM 原生意圖解構、Tool Calling 與執行器自主調度。
     """
     if isinstance(event, dict):
         source = event.get('source', {})
@@ -630,110 +646,38 @@ async def handle_message_event_async(event: Any):
     logger.info(f"Processing message from {user_id} in {to_id}: {msg[:50]}")
 
     try:
-        # 1. 888box 儲存庫狀態查詢指令
-        storage_cmds = ['!box', '!storage', '!stats', '!空間', '!容量']
-        if any(msg.lower() == cmd for cmd in storage_cmds):
-            stats = await get_stats_async()
-            if stats.get("result") == "success":
-                data = stats.get("data", {})
-                reply = (
-                    f"📦 雲端儲存空間狀態 (888box)\n"
-                    f"🔗 主端點: {stats.get('endpoint')}\n"
-                    f"📊 總資產數: {data.get('total', 0)}\n"
-                    f"🖼️ 圖片數: {data.get('image', 0)}\n"
-                    f"🎥 影片數: {data.get('video', 0)}\n"
-                    f"🎵 音訊數: {data.get('audio', 0)}\n"
-                    f"📁 一般檔案: {data.get('file', 0)}"
-                )
-            else:
-                reply = f"❌ 取得儲存空間狀態失敗: {stats.get('message', '未知錯誤')}"
-            await send_response_async(to_id, reply, reply_token)
+        # 1. 說明與引導選單
+        greetings = ['hi', 'hello', '你好', '您好', '嗨', 'help', '說明', '指令', 'start', '功能', '選單']
+        if msg.lower() in greetings or len(msg) < 2:
+            default_help = (
+                "🤖 **小濃縮 - 智能聯網與自主執行 AI 助理 (Agentic Actuators)**\n\n"
+                "📌 **具備自主意圖解構與工具執行力**：\n"
+                "1. 🌐 **自然語言全網檢索**：直接問任何問題（例如：`SpaceX 最新動態？` 或 `台積電最新營收`），AI 自動調用 2MD SERP 搜尋最新事實精確回答。\n"
+                "2. 🎥 **影音與網頁摘要**：直接傳送 YouTube、Bilibili、TikTok 影片或任意文章網址，自動轉錄並生成 5 段式結構化摘要。\n"
+                "3. 🎨 **AI 高品質生圖**：直接要求 `畫一張太空人坐在月球上看地球` 或 `!img 提示詞`，自動調用 Imagen/Gemini 生成圖片。\n"
+                "4. 📦 **888box 雲端儲存**：可查詢空間容量 (`!box` 或 `查詢雲端容量`) 或自動存檔。\n"
+                "5. 💬 **多輪上下文追問**：針對任何主題或網頁摘要內容，可連續深度追問 5 次！\n\n"
+                "💡 *無需死記指令，直接輸入你想做的事即可！*"
+            )
+            await send_response_async(to_id, default_help, reply_token)
             return
 
-        # 2. AI 圖片生成指令
-        image_cmds = ['!img', '!畫圖', '!生成圖片', '!image', '!draw']
-        if any(msg.lower().startswith(cmd) for cmd in image_cmds):
-            prompt = msg
-            for cmd in image_cmds:
-                if msg.lower().startswith(cmd):
-                    prompt = msg[len(cmd):].strip()
-                    break
-
-            if not prompt:
-                await send_response_async(to_id, "請提供圖片描述，例如：`!img 可愛的柴犬在櫻花樹下`", reply_token)
-                return
-
+        # 2. 純網址極速通道 (Fast-Track: 使用者「僅傳送單一網址」時，直接執行五段式結構化摘要)
+        url_match = url_regex.match(msg)
+        if url_match and url_match.group().strip() == msg.strip():
+            url = url_match.group().strip()
             await show_loading_animation_async(to_id, 60)
-            success, result = await generate_image_with_gemini_async(prompt)
-            if success:
-                await send_image_async(to_id, result, reply_token)
-            else:
-                await send_response_async(to_id, result, reply_token)
-            return
-
-        # 3. 即時聯網搜尋指令 (!s / !search / !google / !查 / !新聞)
-        search_cmds = ['!s', '!search', '!google', '!find', '!查詢', '!搜尋', '!查', '!新聞', '!news']
-        if any(msg.lower().startswith(cmd) for cmd in search_cmds):
-            query = msg
-            for cmd in search_cmds:
-                if msg.lower().startswith(cmd):
-                    query = msg[len(cmd):].strip()
-                    break
-
-            if not query:
-                await send_response_async(to_id, "請提供搜尋關鍵字，例如：`!s SpaceX 最新動態` 或 `!新聞 台積電`", reply_token)
-                return
-
-            await show_loading_animation_async(to_id, 60)
-            ok, search_results = await search_web_async(query)
-            if ok:
-                system_messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是一個具備即時聯網瀏覽與深度分析能力的專業 AI 助手。\n"
-                            f"使用者搜尋問題：【{query}】\n\n"
-                            "以下是透過即時網路檢索 (2MD SERP Engine) 獲得的最新現場資料：\n\n"
-                            f"{search_results}\n\n"
-                            "請根據以上即時搜尋結果，以繁體中文提供全面、條理分明、客觀準確的解答。\n"
-                            "若有具體數據、最新事件、或重要來源，請在回答中清楚標註與引用來源網址。"
-                        )
-                    }
-                ]
-                answer = await chain_response_async(system_messages, query)
-                full_reply = f"🔍 **即時聯網檢索結果**：【{query}】\n\n{answer}\n\n💡 您可以繼續針對此搜尋主題提問（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
-                await send_response_async(to_id, full_reply, reply_token)
-
-                async with user_sessions_lock:
-                    user_sessions[user_id] = {
-                        "content": search_results + "\n\n" + answer,
-                        "title": f"搜尋：{query}",
-                        "remaining": MAX_FOLLOWUP_QUESTIONS
-                    }
-            else:
-                await send_response_async(to_id, f"🔍 網路檢索失敗：{search_results}", reply_token)
-            return
-
-        # 4. 網址摘要處理 (影音或網頁)
-        url_match = url_regex.search(msg)
-        if url_match:
-            url = url_match.group()
-            await show_loading_animation_async(to_id, 60)
-
-            # 檢測影音網站 vs 普通網頁
             if is_supported_by_ytdlp(url):
-                logger.info(f"Processing as video URL: {url}")
+                logger.info(f"Fast-track processing video URL: {url}")
                 transcription, video_title = await process_video_url_async(url)
                 if transcription and (transcription.startswith("影片處理失敗") or transcription.startswith("音頻轉錄失敗") or transcription.startswith("音頻文件未生成")):
                     await send_response_async(to_id, transcription, reply_token)
                     return
-
                 system_prompt = get_summary_prompt()
                 summary = await chain_response_async(system_prompt, transcription)
                 title_display = f"【{video_title}】" if video_title else "【影音內容摘要】"
-                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個影片的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
+                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個內容的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
                 await send_response_async(to_id, full_reply, reply_token)
-
                 async with user_sessions_lock:
                     user_sessions[user_id] = {
                         "content": transcription,
@@ -742,18 +686,16 @@ async def handle_message_event_async(event: Any):
                     }
                 return
             else:
-                logger.info(f"Processing as regular webpage URL: {url}")
+                logger.info(f"Fast-track processing webpage URL: {url}")
                 content, title = await scrape_text_from_url_async(url)
                 if content.startswith("無法提取") or content.startswith("抓取過程中發生錯誤"):
                     await send_response_async(to_id, content, reply_token)
                     return
-
                 system_prompt = get_summary_prompt()
                 summary = await chain_response_async(system_prompt, content)
                 title_display = f"【標題】: {title}" if title else "【網頁內容摘要】"
-                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個網頁的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
+                full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以繼續詢問這個內容的相關問題（最多可續問 {MAX_FOLLOWUP_QUESTIONS} 次）"
                 await send_response_async(to_id, full_reply, reply_token)
-
                 async with user_sessions_lock:
                     user_sessions[user_id] = {
                         "content": content,
@@ -762,86 +704,60 @@ async def handle_message_event_async(event: Any):
                     }
                 return
 
-        # 5. 續問功能處理
+        # 3. Agentic 自主意圖解構與工具執行中樞 (LLM ReAct Loop)
+        await show_loading_animation_async(to_id, 60)
+        system_prompt = (
+            "你是一個具備自主意圖解構與即時工具執行力（Agentic Actuators）的頂級繁體中文 AI 助手。\n"
+            "你可以根據使用者的自然語言需求，自主決定是否調用合適的工具：\n"
+            "- 若需要即時事實、新聞、股價、人物動態或線上搜尋，調用 `web_search`\n"
+            "- 若需要深入閱讀特定網頁文章，調用 `web_read_markdown`\n"
+            "- 若需要轉錄分析影音內容，調用 `video_transcribe`\n"
+            "- 若使用者要求畫圖、生成圖片或插圖，調用 `generate_image`\n"
+            "- 若需要查詢雲端空間或上傳筆記，調用 `box_storage_action`\n\n"
+            "【作答原則】\n"
+            "1. 必須以流暢、親切、專業、條理分明的繁體中文回答。\n"
+            "2. 嚴格遵守零幻覺與即時檢索鐵律，涉及即時數據與事實必須根據工具返回結果作答，並在回答中清楚標註數據來源與參考網址。\n"
+            "3. 若使用者同時提出複合需求（例如：先搜尋新聞再生成概念圖），你可以連續發起多個工具調用。"
+        )
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+
+        # 載入當前 Session 上下文
         async with user_sessions_lock:
             session = user_sessions.get(user_id)
-
-        if session and session.get("remaining", 0) > 0:
-            await show_loading_animation_async(to_id, 30)
-            system_messages = [
-                {
+            if session and session.get("remaining", 0) > 0:
+                messages.append({
                     "role": "system",
-                    "content": f"你是一個專業的內容分析助手。以下是【{session['title']}】的完整內容：\n\n{session['content']}\n\n請根據以上內容，用繁體中文回答使用者的問題。回答要準確、具體，並引用原文相關部分。"
-                }
-            ]
-            answer = await chain_response_async(system_messages, msg)
+                    "content": f"【當前討論主題】: {session['title']}\n【原始背景內容】:\n{session['content'][:6000]}"
+                })
 
-            async with user_sessions_lock:
-                session["remaining"] -= 1
-                rem = session["remaining"]
-                if rem == 0:
-                    del user_sessions[user_id]
+        messages.append({"role": "user", "content": msg})
 
-            rem_text = f"\n\n📊 剩餘續問次數: {rem}"
-            if rem == 0:
-                rem_text += "\n\n💬 續問次數已用完，請提供新的網址或搜尋開始新的對話。"
+        # 執行 ReAct 自主代理迴圈
+        answer, generated_images = await run_agentic_loop_async(
+            messages=messages,
+            actuators=actuators,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
+            max_steps=5
+        )
 
-            full_reply = answer + rem_text
-            await send_response_async(to_id, full_reply, reply_token)
-            return
+        # 4. 發送結果給使用者
+        # 先發送文字內容
+        await send_response_async(to_id, answer, reply_token)
 
-        # 6. 智慧聯網問答 (針對一般自然語言提問自動即時搜尋網路)
-        greetings = ['hi', 'hello', '你好', '您好', '嗨', 'help', '說明', '指令', 'start']
-        if msg.lower() in greetings or len(msg) < 2:
-            default_help = (
-                "🤖 **小濃縮 - 智能聯網與多媒體摘要助手**\n\n"
-                "📌 **核心功能**：\n"
-                "1. 🌐 **即時聯網瀏覽**：直接輸入任何問題（例如：`SpaceX 最近有何動態？` 或 `!s 台積電最新財報`），自動搜尋全網即時事實並精準回答。\n"
-                "2. 🎥 **1000+ 影音與文章摘要**：傳送 YouTube、Bilibili、TikTok 影片或任意網頁連結，自動提取並產出結構化繁體中文摘要。\n"
-                "3. 💬 **深度續問**：摘要或搜尋後可連續提問 5 次，由 AI 依據原文深入解答。\n"
-                "4. 🎨 **AI 圖片生成**：輸入 `!img [提示詞]` 產出高畫質圖片。\n"
-                "5. 📦 **雲端資產庫**：輸入 `!box` 即時查詢 888box 雲端儲存狀態。"
-            )
-            await send_response_async(to_id, default_help, reply_token)
-            return
+        # 若生成了圖片，發送圖片訊息
+        for img_url in generated_images:
+            await send_image_async(to_id, img_url)
 
-        # 一般提問：自動聯網搜尋回答
-        await show_loading_animation_async(to_id, 60)
-        logger.info(f"Auto-browsing live web for question: {msg[:50]}")
-        ok, search_results = await search_web_async(msg)
-        if ok and len(search_results.strip()) > 50:
-            system_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一個具備即時聯網瀏覽能力、零幻覺、準確權威的 AI 助手。\n"
-                        f"使用者問題：【{msg}】\n\n"
-                        "以下是透過 2MD SERP Engine 即時檢索獲得的最新網路現場資訊：\n\n"
-                        f"{search_results}\n\n"
-                        "請根據以上即時搜尋資訊，以繁體中文給出清晰、精確、有深度且附帶關鍵來源的解答。"
-                    )
-                }
-            ]
-            answer = await chain_response_async(system_messages, msg)
-            full_reply = f"🌐 **即時聯網回答**：\n\n{answer}\n\n💡 您可以繼續針對此內容提問（剩餘 {MAX_FOLLOWUP_QUESTIONS} 次續問）"
-            await send_response_async(to_id, full_reply, reply_token)
-
-            async with user_sessions_lock:
-                user_sessions[user_id] = {
-                    "content": search_results + "\n\n" + answer,
-                    "title": f"問題：{msg[:20]}",
-                    "remaining": MAX_FOLLOWUP_QUESTIONS
-                }
-        else:
-            # 若搜尋無結果，直接由 LLM 知識庫回答
-            system_messages = [
-                {
-                    "role": "system",
-                    "content": "你是一個專業的繁體中文 AI 助理，請熱情、準確、條理清晰地回答使用者的問題。"
-                }
-            ]
-            answer = await chain_response_async(system_messages, msg)
-            await send_response_async(to_id, answer, reply_token)
+        # 5. 更新對話狀態 Session
+        async with user_sessions_lock:
+            user_sessions[user_id] = {
+                "content": answer,
+                "title": msg[:30],
+                "remaining": MAX_FOLLOWUP_QUESTIONS
+            }
 
     except Exception as e:
         logger.error(f"Error handling event for {user_id}: {e}", exc_info=True)

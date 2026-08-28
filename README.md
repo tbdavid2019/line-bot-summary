@@ -95,6 +95,33 @@ flowchart TD
 - **In-Memory 架構**：零外部網路 I/O 延遲，單次 Session 檢索耗時 `< 1ms`。
 - **擴充指引**：若未來需跨多伺服器節點共享或持久化使用者對話狀態，可無縫將 `user_sessions` 介面抽換對接 Redis 或 Key-Value 儲存庫。
 
+## 🤖 意圖解構與自主執行架構 (Agentic Actuators)
+
+本專案升級為 **「LLM 原生 Tool Calling 自主代理架構」**，讓 LLM 大腦直接具備 API 執行權限：
+
+```mermaid
+flowchart TD
+    User["使用者輸入任意自然語言"] --> LLM["LLM 大腦 (Gemini 3.6 Flash / Tool Calling)"]
+    LLM -->|"自主決策與意圖解構"| Dispatcher["Actuators 執行器中樞 (src/agent_tools.py)"]
+    
+    subgraph Actuators ["執行器工具箱 (Actuators)"]
+        T1["🌐 web_search<br/>(2MD SERP 全網搜尋)"]
+        T2["📑 web_read_markdown<br/>(2MD 高速網頁閱讀)"]
+        T3["🎥 video_transcribe<br/>(yt-dlp + Gemini 音訊轉錄)"]
+        T4["🎨 generate_image<br/>(Gemini/Imagen AI 生圖)"]
+        T5["📦 box_storage_action<br/>(888box 雲端多端點存儲)"]
+    end
+    
+    Dispatcher --> Actuators
+    Actuators -->|"回傳執行結果"| LLM
+    LLM -->|"綜合推理多工具結果"| Reply["LINE 雙通道回傳 (文字 + 圖片)"]
+```
+
+### 🎯 核心優勢與能力
+1. **擺脫死記指令**：使用者無需輸入前綴（如 `!s`、`!img`、`!box`），直接用自然語言表達需求即可。
+2. **多工具鏈式調用**：支援單次請求中自主觸發多個工具（例如：*「先幫我搜尋 SpaceX 星艦發射台的最新消息，並為它生成一張未來太空基地的概念插圖」*）。
+3. **極速通道相容 (Fast-Track)**：當使用者僅傳送單一網址時，自動進入 5 段式結構化極速摘要模式，兼具速度與深度。
+
 ## 🔧 技術特色
 
 本專案 fork 自 https://github.com/Achiwilms/LINE-NEWS-Bot
