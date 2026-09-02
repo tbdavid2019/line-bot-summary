@@ -161,6 +161,19 @@ flowchart TD
 - 自動將超過 LINE 單則上限（2000 字元）的超長分析或逐字稿智慧分段發送。
 - 在最後一則訊息自動掛載 **LINE Quick Reply 互動選單**，讓使用者隨時一鍵切換濃縮風格！
 
+## 🔒 安全防護與合規強化體系 (Security & Hardening)
+
+專案內建完整的資安防禦體系（[`src/security.py`](src/security.py)），符合企業級 Webhook 與雲端服務安全規範：
+
+| 防禦面向 | 威脅防範 | 實作機制 |
+| :--- | :--- | :--- |
+| **🌐 SSRF 防護** | 阻擋惡意 URL 探測本機或 VPC 內網資源（如 `127.0.0.1`, `169.254.169.254` 雲端 Metadata） | `is_safe_url()` 解析所有域名並嚴格比對 RFC 1918 私有網段與保留 IP。 |
+| **🔐 Webhook 嚴格簽章** | 防止未經授權的第三方偽造 LINE Webhook 注入惡意指令 | 強制檢驗 `X-Line-Signature` 並使用 `hmac.compare_digest` 常數時間比對防止時序攻擊。 |
+| **🧠 有界 Session 快取** | 防止惡意流量或長期運行時對話紀錄無上限膨脹導致記憶體耗盡 (OOM DoS) | 實裝 `BoundedSessionManager`，具備 1,000 筆上限容量 (LRU) 與 2 小時 TTL 自動過期回收。 |
+| **📂 路徑穿越防禦** | 防止使用者上傳或儲存惡意檔名（如 `../../etc/passwd`）侵入系統目錄 | `sanitize_filename()` 嚴格剔除路徑符號、連續點與特殊控制字元。 |
+| **🛑 敏感資訊脫敏** | 防止例外異常時洩漏伺服器路徑、API Key (Bearer/sk-xxx/AIzaSy) 或堆疊 (CWE-209) | `sanitize_error_message()` 自動過濾與淨化對外回傳之錯誤訊息。 |
+| **📦 供應鏈漏洞修補** | 避免第三方相依套件已知安全漏洞 | 升級 `requests>=2.32.3`、`urllib3>=2.2.2`、`fastapi>=0.115.0`。 |
+
 ## 🔧 技術特色
 
 本專案 fork 自 https://github.com/Achiwilms/LINE-NEWS-Bot

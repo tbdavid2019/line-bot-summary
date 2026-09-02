@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [2026-09-02]
+### Security & Hardening
+- **全方位資安審計與防禦體系強化 ([`src/security.py`](src/security.py), [`app.py`](app.py), [`src/box_storage.py`](src/box_storage.py), [`src/web_browser.py`](src/web_browser.py), [`src/agent_tools.py`](src/agent_tools.py), [`README.md`](README.md))**：
+  - **SSRF 防護**：實裝 `is_safe_url()`，阻擋惡意 URL 存取 `127.0.0.1`、`169.254.169.254`（雲端 Metadata）與所有 RFC 1918 私有網段，防範內網穿透與實例憑證外洩。
+  - **Webhook 嚴格簽章驗證**：強制驗證 `X-Line-Signature`，若 `CHANNEL_SECRET` 未設定或簽章不符即刻拒絕，採用 `hmac.compare_digest` 防時序攻擊。
+  - **有界 Session 管理 (DoS 防禦)**：實作 `BoundedSessionManager`，具備 1,000 筆容量上限 (LRU) 與 2 小時 TTL 自動過期回收，杜絕高併發與長時間運行時記憶體無上限膨脹 (OOM)。
+  - **路徑穿越與檔名淨化**：實裝 `sanitize_filename()`，強制剔除所有路徑符號、連續點與特殊字元，保護系統與雲端儲存安全。
+  - **錯誤訊息敏感資訊脫敏 (CWE-209)**：實裝 `sanitize_error_message()`，過濾所有回傳訊息中的 API Key、Bearer Token、堆疊資訊與內部檔案路徑。
+  - **依賴套件安全升級**：升級 `requests>=2.32.3`、`urllib3>=2.2.2`、`fastapi>=0.115.0`，修補已知第三方相依漏洞。
+  - **腳本權限收斂**：修正 `setup_chrome_container.sh` 資料夾過度開放權限 (`777` ➔ `750`) 並加入 `set -euo pipefail`。
+
 ## [2026-08-28]
 ### Added
 - **CI/CD 部署強化與 Docker Compose / Chrome 容器生態整合 ([`docker-compose.yml`](docker-compose.yml), [`setup_chrome_container.sh`](setup_chrome_container.sh), [`build.sh`](build.sh), [`README.md`](README.md))**：

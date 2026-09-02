@@ -15,6 +15,8 @@ import urllib.parse
 from typing import Optional, Tuple, List, Dict, Any
 import httpx
 
+from src.security import is_safe_url
+
 logger = logging.getLogger("web-browser")
 
 DEFAULT_ENDPOINTS = [
@@ -73,6 +75,11 @@ class WebBrowserClient:
         clean_url = url.strip()
         if not clean_url.startswith("http://") and not clean_url.startswith("https://"):
             clean_url = "https://" + clean_url
+
+        # SSRF 防護檢查
+        if not is_safe_url(clean_url):
+            logger.warning(f"SSRF protection blocked URL read for: {clean_url}")
+            return False, "⚠️ 系統安全原則已阻擋存取該內部或受限制之網址。", None
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

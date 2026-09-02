@@ -1,9 +1,5 @@
-# -*- coding: utf-8 -*-
-"""
-Agentic Tool Calling & Actuators 執行器工具箱模組
-賦予 LLM 意圖解構與自主調度執行能力。
-"""
 import os
+import re
 import json
 import logging
 import asyncio
@@ -13,6 +9,7 @@ import httpx
 
 from src.web_browser import search_web_async, read_url_markdown_async
 from src.box_storage import get_stats_async, upload_text_async, upload_url_async
+from src.security import sanitize_filename, sanitize_error_message, is_safe_url
 
 logger = logging.getLogger("agent-tools")
 
@@ -189,7 +186,8 @@ class AgentActuators:
                     return json.dumps(stats, ensure_ascii=False), extra_meta
                 elif action == "upload_text":
                     text = arguments.get("text", "")
-                    filename = arguments.get("filename", "note.txt")
+                    raw_fn = arguments.get("filename", "note.txt")
+                    filename = sanitize_filename(raw_fn, default_prefix="note", default_ext=".txt")
                     res = await upload_text_async(text, filename)
                     return json.dumps(res, ensure_ascii=False), extra_meta
                 return f"不支援的操作: {action}", extra_meta
@@ -198,8 +196,13 @@ class AgentActuators:
                 title = arguments.get("title", "未命名文章").strip()
                 md_content = arguments.get("markdown_content", "").strip()
                 import uuid
-                slug = arguments.get("path", "").strip() or f"note-{uuid.uuid4().hex[:8]}"
+                raw_slug = arguments.get("path", "").strip()
+                # 清理 slug 防止路徑注入
+                cleaned_slug = re.sub(r'[^a-zA-Z0-9_\-]', '', raw_slug)
+                slug = cleaned_slug or f"note-{uuid.uuid4().hex[:8]}"
                 theme = arguments.get("theme", "claude-canvas")
+                if theme not in ["claude-canvas", "notion-clean", "retro", "tokyo-night", "bauhaus", "terminal", "professional"]:
+                    theme = "claude-canvas"
                 
                 # 遵循 Wiki 規範：第一行必須是 # Title
                 if not md_content.startswith("#"):
@@ -226,7 +229,7 @@ class AgentActuators:
 
         except Exception as e:
             logger.error(f"Error executing actuator {name}: {e}", exc_info=True)
-            return f"執行工具 {name} 時發生異常: {str(e)}", extra_meta
+            return f"執行工具 {name} 時發生異常: {sanitize_error_message(e)}", extra_meta
 
 
 # ----------------------------------------------------------------------

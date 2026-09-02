@@ -42,6 +42,14 @@ from src.agent_tools import (
     run_agentic_loop_async
 )
 
+# 安全強化模組 (SSRF, 錯誤脫敏, 有界 Session 管理)
+from src.security import (
+    is_safe_url,
+    sanitize_error_message,
+    sanitize_filename,
+    BoundedSessionManager
+)
+
 # Google GenAI / GCS (選用備援)
 try:
     from google import genai as genai_v2
@@ -112,9 +120,8 @@ if gcs_storage and gcs_credentials_path and gcs_bucket_name:
     except Exception as e:
         logger.warning(f"Failed to initialize GCS: {e}")
 
-# 用戶對話狀態管理（續問功能）
-user_sessions: Dict[str, Dict[str, Any]] = {}
-user_sessions_lock = asyncio.Lock()
+# 用戶對話狀態管理（安全有界 LRU + TTL 緩存，防止記憶體無上限膨脹）
+session_manager = BoundedSessionManager(max_entries=1000, ttl_seconds=7200)
 MAX_FOLLOWUP_QUESTIONS = 5
 
 # 正則表達式
@@ -183,25 +190,28 @@ async def chain_response_async(system_messages, text: str) -> str:
     except httpx.TimeoutException:
         return "⚠️ LLM API 請求逾時，請稍後再試。"
     except Exception as e:
-        logger.error(f"LLM API error: {e}")
-        return f"⚠️ LLM API 請求發生錯誤: {str(e)}"
+        logger.error(f"LLM API error: {e}", exc_info=True)
+        return f"⚠️ LLM API 請求發生錯誤: {sanitize_error_message(e)}"
 
 # ----------------------------------------------------------------------
 # 網頁與影音非同步抓取處理 (Non-blocking via Thread Pool)
 # ----------------------------------------------------------------------
 def _sync_scrape_text(url: str) -> Tuple[str, Optional[str]]:
     """同步抓取網頁內容"""
+    if not is_safe_url(url):
+        logger.warning(f"SSRF blocked for URL: {url}")
+        return "⚠️ 系統安全原則已阻擋存取該內部或受限制之網址。", None
     try:
         downloaded = trafilatura.fetch_url(url)
         if downloaded is None:
             return "無法提取此網頁的內容。", None
         content = trafilatura.extract(downloaded, include_formatting=True)
         soup = BeautifulSoup(downloaded, 'html.parser')
-        title = soup.title.string if soup.title else "無法獲取標題"
+        title = soup.title.string.strip() if soup.title and soup.title.string else "無法獲取標題"
         return (content.strip() if content else "無法提取此網頁的文字內容。"), title
     except Exception as e:
-        logger.error(f"抓取失敗: {e}")
-        return f"抓取過程中發生錯誤: {e}", None
+        logger.error(f"抓取失敗: {e}", exc_info=True)
+        return f"抓取過程中發生錯誤: {sanitize_error_message(e)}", None
 
 async def scrape_text_from_url_async(url: str) -> Tuple[str, Optional[str]]:
     """
@@ -209,6 +219,10 @@ async def scrape_text_from_url_async(url: str) -> Tuple[str, Optional[str]]:
     優先使用 2MD (888-url2md) 高效 Markdown 服務，自動處理動態渲染與格式清理；
     若 2MD 服務異常，自動無縫降級至本地 trafilatura + BeautifulSoup 解析。
     """
+    if not is_safe_url(url):
+        logger.warning(f"SSRF blocked for URL: {url}")
+        return "⚠️ 系統安全原則已阻擋存取該內部或受限制之網址。", None
+
     try:
         ok, content, title = await read_url_markdown_async(url)
         if ok and content and len(content.strip()) > 30 and not content.startswith("無法提取"):
@@ -227,6 +241,9 @@ def _get_cookie_file() -> Optional[str]:
 
 def is_supported_by_ytdlp(url: str) -> bool:
     """檢測 URL 是否被 yt-dlp 支援之影音網站"""
+    if not is_safe_url(url):
+        return False
+
     video_site_patterns = [
         r'youtube\.com|youtu\.be',
         r'vimeo\.com',
@@ -370,7 +387,8 @@ def _sync_process_audio_transcription(video_url: str) -> str:
         return " ".join(transcripts)
 
     except Exception as e:
-        return f"音頻轉錄失敗: {str(e)}"
+        logger.error(f"Audio transcription error: {e}", exc_info=True)
+        return f"音頻轉錄失敗: {sanitize_error_message(e)}"
     finally:
         if audio_file and os.path.exists(audio_file):
             try:
@@ -386,6 +404,10 @@ def _sync_process_audio_transcription(video_url: str) -> str:
 
 def _sync_process_video_url(video_url: str) -> Tuple[str, Optional[str]]:
     """提取影音字幕或音訊逐字稿"""
+    if not is_safe_url(video_url):
+        logger.warning(f"SSRF blocked for video URL: {video_url}")
+        return "⚠️ 系統安全原則已阻擋存取該內部或受限制之網址。", None
+
     try:
         cookie_path = _get_cookie_file()
         ydl_opts = {
@@ -403,7 +425,7 @@ def _sync_process_video_url(video_url: str) -> Tuple[str, Optional[str]]:
             video_id = info.get('id', str(uuid.uuid4()))
             video_title = info.get('title', '無法獲取標題')
 
-            # 優先從 metadata 的字幕或自動字幕 URL 直接抓取內容
+            # 優先從 metadata 的字幕或自動字幕 URL 直接抓取內容 (含 SSRF 檢查)
             subs = info.get('subtitles') or {}
             auto_subs = info.get('automatic_captions') or {}
             for lang in ['zh-Hant', 'zh-TW', 'zh-Hans', 'zh', 'en']:
@@ -411,7 +433,7 @@ def _sync_process_video_url(video_url: str) -> Tuple[str, Optional[str]]:
                 for fmt in target_formats:
                     if fmt.get('ext') in ['vtt', 'srv1', 'srv2', 'srv3', 'json3']:
                         sub_url = fmt.get('url')
-                        if sub_url:
+                        if sub_url and is_safe_url(sub_url):
                             try:
                                 import requests
                                 resp = requests.get(sub_url, timeout=15)
@@ -435,7 +457,8 @@ def _sync_process_video_url(video_url: str) -> Tuple[str, Optional[str]]:
         transcription = _sync_process_audio_transcription(video_url)
         return transcription, video_title
     except Exception as e:
-        return f"影片處理失敗: {str(e)}", None
+        logger.error(f"Video process error: {e}", exc_info=True)
+        return f"影片處理失敗: {sanitize_error_message(e)}", None
 
 async def process_video_url_async(video_url: str) -> Tuple[str, Optional[str]]:
     """非同步包裝影音處理"""
@@ -732,17 +755,16 @@ async def handle_message_event_async(event: Any):
                 title_display = f"【{video_title}】" if video_title else "【影音內容摘要】"
                 full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以點擊下方按鈕切換濃縮風格，或直接輸入問題進行深入續問（剩餘 {MAX_FOLLOWUP_QUESTIONS} 次）"
                 await send_response_async(to_id, full_reply, reply_token, quick_reply=get_summary_quick_reply())
-                async with user_sessions_lock:
-                    user_sessions[user_id] = {
-                        "content": transcription,
-                        "title": video_title or "影音內容",
-                        "remaining": MAX_FOLLOWUP_QUESTIONS
-                    }
+                await session_manager.set(user_id, {
+                    "content": transcription,
+                    "title": video_title or "影音內容",
+                    "remaining": MAX_FOLLOWUP_QUESTIONS
+                })
                 return
             else:
                 logger.info(f"Fast-track processing webpage URL: {url}")
                 content, title = await scrape_text_from_url_async(url)
-                if content.startswith("無法提取") or content.startswith("抓取過程中發生錯誤"):
+                if content.startswith("無法提取") or content.startswith("抓取過程中發生錯誤") or content.startswith("⚠️"):
                     await send_response_async(to_id, content, reply_token)
                     return
                 system_prompt = get_summary_prompt()
@@ -750,12 +772,11 @@ async def handle_message_event_async(event: Any):
                 title_display = f"【標題】: {title}" if title else "【網頁內容摘要】"
                 full_reply = f"{title_display}\n\n{summary}\n\n💡 您可以點擊下方按鈕切換濃縮風格，或直接輸入問題進行深入續問（剩餘 {MAX_FOLLOWUP_QUESTIONS} 次）"
                 await send_response_async(to_id, full_reply, reply_token, quick_reply=get_summary_quick_reply())
-                async with user_sessions_lock:
-                    user_sessions[user_id] = {
-                        "content": content,
-                        "title": title or "網頁內容",
-                        "remaining": MAX_FOLLOWUP_QUESTIONS
-                    }
+                await session_manager.set(user_id, {
+                    "content": content,
+                    "title": title or "網頁內容",
+                    "remaining": MAX_FOLLOWUP_QUESTIONS
+                })
                 return
 
         # 3. Agentic 自主意圖解構與工具執行中樞 (LLM ReAct Loop)
@@ -783,13 +804,12 @@ async def handle_message_event_async(event: Any):
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
         # 載入當前 Session 上下文
-        async with user_sessions_lock:
-            session = user_sessions.get(user_id)
-            if session and session.get("remaining", 0) > 0:
-                messages.append({
-                    "role": "system",
-                    "content": f"【當前討論主題】: {session['title']}\n【原始背景內容】:\n{session['content'][:6000]}"
-                })
+        session = await session_manager.get(user_id)
+        if session and session.get("remaining", 0) > 0:
+            messages.append({
+                "role": "system",
+                "content": f"【當前討論主題】: {session['title']}\n【原始背景內容】:\n{session['content'][:6000]}"
+            })
 
         messages.append({"role": "user", "content": msg})
 
@@ -812,16 +832,15 @@ async def handle_message_event_async(event: Any):
             await send_image_async(to_id, img_url)
 
         # 5. 更新對話狀態 Session
-        async with user_sessions_lock:
-            user_sessions[user_id] = {
-                "content": answer,
-                "title": msg[:30],
-                "remaining": MAX_FOLLOWUP_QUESTIONS
-            }
+        await session_manager.set(user_id, {
+            "content": answer,
+            "title": msg[:30],
+            "remaining": MAX_FOLLOWUP_QUESTIONS
+        })
 
     except Exception as e:
         logger.error(f"Error handling event for {user_id}: {e}", exc_info=True)
-        await send_response_async(to_id, f"⚠️ 處理請求時發生錯誤: {str(e)}", reply_token)
+        await send_response_async(to_id, f"⚠️ 處理請求時發生異常: {sanitize_error_message(e)}", reply_token)
 
 # ----------------------------------------------------------------------
 # FastAPI 路由端點
@@ -853,13 +872,20 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
     signature = request.headers.get('X-Line-Signature', '')
     body = await request.body()
 
-    # 1. 驗證簽章 (HMAC-SHA256)
-    if channel_secret:
-        hash_val = hmac.new(channel_secret.encode('utf-8'), body, hashlib.sha256).digest()
-        computed_sig = base64.b64encode(hash_val).decode('utf-8')
-        if not hmac.compare_digest(computed_sig, signature):
-            logger.warning(f"Invalid LINE webhook signature. Received: {signature}")
-            raise HTTPException(status_code=400, detail="Invalid signature")
+    # 1. 嚴格驗證簽章 (HMAC-SHA256)
+    if not channel_secret:
+        logger.error("CHANNEL_SECRET is not configured! Rejecting webhook for security.")
+        raise HTTPException(status_code=500, detail="Server webhook secret not configured")
+
+    if not signature:
+        logger.warning("Missing X-Line-Signature in webhook request.")
+        raise HTTPException(status_code=400, detail="Missing signature header")
+
+    hash_val = hmac.new(channel_secret.encode('utf-8'), body, hashlib.sha256).digest()
+    computed_sig = base64.b64encode(hash_val).decode('utf-8')
+    if not hmac.compare_digest(computed_sig, signature):
+        logger.warning("Invalid LINE webhook signature detected.")
+        raise HTTPException(status_code=400, detail="Invalid signature")
 
     # 2. 解析 JSON 內容
     try:
@@ -868,7 +894,7 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
         events = body_json.get('events', [])
     except Exception as e:
         logger.error(f"Webhook parse error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Malformed JSON payload")
 
     # 3. 分派事件
     for event in events:

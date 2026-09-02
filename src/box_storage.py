@@ -15,7 +15,12 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 import requests
 
+from src.security import is_safe_url, sanitize_filename
+
 logger = logging.getLogger(__name__)
+
+# 最大遠端中繼下載大小 (50MB)，防止磁碟耗盡 DoS
+MAX_REMOTE_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 # 預設端點清單
 DEFAULT_BOX_ENDPOINTS = [
@@ -185,7 +190,8 @@ class BoxStorageClient:
         if not os.path.isfile(file_path):
             return {"result": "error", "message": f"檔案不存在: {file_path}"}
 
-        filename = os.path.basename(file_path)
+        raw_filename = os.path.basename(file_path)
+        filename = sanitize_filename(raw_filename, default_prefix="file")
         mime_type, _ = mimetypes.guess_type(file_path)
         mime_type = mime_type or "application/octet-stream"
 
@@ -240,6 +246,8 @@ class BoxStorageClient:
         :param password: 存取密碼（選填）
         :return: API 回應字典
         """
+        filename = sanitize_filename(filename, default_prefix="blob", default_ext=".bin")
+
         if isinstance(data_bytes, bytes):
             byte_stream = io.BytesIO(data_bytes)
         else:
@@ -304,8 +312,10 @@ class BoxStorageClient:
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"summary_{timestamp}.txt"
-        elif not filename.endswith(".txt"):
-            filename += ".txt"
+        else:
+            filename = sanitize_filename(filename, default_prefix="summary", default_ext=".txt")
+            if not filename.endswith(".txt") and not filename.endswith(".md"):
+                filename += ".txt"
 
         raw_bytes = text_content.encode("utf-8")
         return self.upload_bytes(
@@ -355,6 +365,11 @@ class BoxStorageClient:
         :param password: 密碼
         :return: API 回應字典
         """
+        # SSRF 防護檢驗
+        if not is_safe_url(remote_url):
+            logger.warning(f"[BoxStorage] 阻擋非法或內部網路 URL: {remote_url}")
+            return {"result": "error", "message": "非法或受保護的遠端 URL，拒絕存取。"}
+
         # 1. 嘗試直接呼叫 upload_url action
         data: Dict[str, Any] = {"url": remote_url}
         if title:
@@ -371,7 +386,7 @@ class BoxStorageClient:
         # 2. 若 upload_url 失敗，自動透過本機串流下載並上傳
         logger.info(f"[BoxStorage] 遠端轉存失敗，改採本地下載中繼上傳: {remote_url}")
         try:
-            with requests.get(remote_url, stream=True, timeout=120) as r:
+            with requests.get(remote_url, stream=True, timeout=60) as r:
                 r.raise_for_status()
                 # 猜測檔名
                 content_disposition = r.headers.get("content-disposition", "")
@@ -382,12 +397,17 @@ class BoxStorageClient:
                     url_path = remote_url.split("?")[0].rstrip("/")
                     filename = os.path.basename(url_path) or f"downloaded_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
+                filename = sanitize_filename(filename, default_prefix="downloaded", default_ext=".bin")
                 content_type = r.headers.get("content-type", "application/octet-stream").split(";")[0]
 
-                # 讀取串流或暫存上傳
+                # 讀取串流（限制最大下載大小防止磁碟耗盡 DoS）
+                total_bytes = 0
                 with tempfile.NamedTemporaryFile(delete=True) as tmp:
                     for chunk in r.iter_content(chunk_size=65536):
                         if chunk:
+                            total_bytes += len(chunk)
+                            if total_bytes > MAX_REMOTE_DOWNLOAD_BYTES:
+                                return {"result": "error", "message": f"遠端檔案過大（超過 {MAX_REMOTE_DOWNLOAD_BYTES // 1024 // 1024}MB 上限）"}
                             tmp.write(chunk)
                     tmp.flush()
                     tmp.seek(0)
@@ -402,7 +422,7 @@ class BoxStorageClient:
                     )
         except Exception as e:
             logger.error(f"[BoxStorage] 中繼下載上傳失敗: {e}")
-            return {"result": "error", "message": f"URL 轉存失敗: {e}"}
+            return {"result": "error", "message": "遠端檔案下載轉存失敗"}
 
     async def upload_url_async(
         self,

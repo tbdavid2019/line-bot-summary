@@ -1,6 +1,7 @@
 #!/bin/bash
 # Description: Set up headless Chrome/Chromium container for extracting fresh YouTube cookies
 # Author: Antigravity
+set -euo pipefail
 
 CHROME_DATA_DIR="${CHROME_DATA_DIR:-/home/bitnami/chrome-data}"
 CONTAINER_NAME="chrome"
@@ -9,10 +10,10 @@ echo "=========================================================="
 echo " Setting up Headless Chrome Container for YouTube Cookies"
 echo "=========================================================="
 
-# 1. 建立 Chrome 數據儲存目錄
+# 1. 建立 Chrome 數據儲存目錄 (限制存取權限)
 echo "[1/4] Creating Chrome data directory at $CHROME_DATA_DIR..."
 mkdir -p "$CHROME_DATA_DIR"
-chmod -R 777 "$CHROME_DATA_DIR"
+chmod 750 "$CHROME_DATA_DIR"
 
 # 2. 啟動 Chrome / Chromium 容器
 echo "[2/4] Pulling and running lscr.io/linuxserver/chromium image..."
