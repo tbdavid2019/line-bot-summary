@@ -16,6 +16,7 @@ from typing import Optional, Dict, Any, List, Union
 import requests
 
 from src.security import is_safe_url, sanitize_filename
+from src.file_detector import detect_content_type, detect_content_type_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -192,8 +193,10 @@ class BoxStorageClient:
 
         raw_filename = os.path.basename(file_path)
         filename = sanitize_filename(raw_filename, default_prefix="file")
-        mime_type, _ = mimetypes.guess_type(file_path)
-        mime_type = mime_type or "application/octet-stream"
+        
+        # 採用 Magika AI 深度檢測檔案真實 MIME Type（若未就緒自動降級）
+        detection = detect_content_type(file_path)
+        mime_type = detection.mime_type or "application/octet-stream"
 
         data: Dict[str, Any] = {}
         if title:
@@ -250,12 +253,24 @@ class BoxStorageClient:
 
         if isinstance(data_bytes, bytes):
             byte_stream = io.BytesIO(data_bytes)
+            sample_bytes = data_bytes[:16384]
         else:
             byte_stream = data_bytes
+            pos = data_bytes.tell()
+            sample_bytes = data_bytes.read(16384)
+            data_bytes.seek(pos)
 
-        if not content_type:
-            mime_type, _ = mimetypes.guess_type(filename)
-            content_type = mime_type or "application/octet-stream"
+        # 若未指定 content_type 或為通用 octet-stream，透過 Magika 檢測 sample_bytes
+        if not content_type or content_type == "application/octet-stream":
+            detection = detect_content_type_bytes(sample_bytes, filename_hint=filename)
+            if detection and detection.mime_type != "application/octet-stream":
+                content_type = detection.mime_type
+                # 若檔名為預設 .bin 且檢測出安全標準副檔名，自動修正副檔名
+                if filename.endswith(".bin") and detection.primary_extension:
+                    filename = filename[:-4] + detection.primary_extension
+            else:
+                mime_type, _ = mimetypes.guess_type(filename)
+                content_type = mime_type or "application/octet-stream"
 
         form_data: Dict[str, Any] = {}
         if title:

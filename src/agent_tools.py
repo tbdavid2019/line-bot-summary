@@ -113,6 +113,23 @@ AGENT_TOOLS = [
                 "required": ["title", "markdown_content"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_file_type",
+            "description": "使用 Google Magika 深度學習模型精確辨識網址檔案、多媒體或文件的真實 MIME Type 與格式類型。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "欲辨識檢驗的檔案或資源 URL"
+                    }
+                },
+                "required": ["url"]
+            }
+        }
     }
 ]
 
@@ -223,6 +240,45 @@ class AgentActuators:
                         return f"✅ 成功發布至 David888 Wiki！\n📖 公開閱讀連結: {share_url}\n📽️ 2D 簡報模式: {share_url}/present", extra_meta
                     else:
                         return f"❌ 發布失敗: {res_data.get('msg', '未知錯誤')}", extra_meta
+
+            elif name == "inspect_file_type":
+                url = arguments.get("url", "").strip()
+                if not url or not is_safe_url(url):
+                    return "❌ 提供的 URL 無效或存在安全風險。", extra_meta
+                try:
+                    from src.file_detector import detect_content_type_bytes
+                    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                        # 優先抓取前 16KB 二進位以節省網路流量
+                        headers = {"Range": "bytes=0-16383"}
+                        resp = await client.get(url, headers=headers)
+                        if resp.status_code in [200, 206]:
+                            sample = resp.content
+                        else:
+                            full_resp = await client.get(url)
+                            sample = full_resp.content[:16384]
+
+                        detection = detect_content_type_bytes(sample, filename_hint=os.path.basename(url.split("?")[0]))
+                        extra_meta["detection"] = {
+                            "mime_type": detection.mime_type,
+                            "label": detection.label,
+                            "group": detection.group,
+                            "description": detection.description,
+                            "score": detection.score,
+                            "is_text": detection.is_text
+                        }
+                        report = (
+                            f"🔍 **Google Magika 檔案識別報告**\n"
+                            f"- 檔案特徵描述：{detection.description}\n"
+                            f"- MIME 類型：`{detection.mime_type}`\n"
+                            f"- 格式標籤與分組：{detection.label} ({detection.group})\n"
+                            f"- 推薦副檔名：`{detection.primary_extension}`\n"
+                            f"- AI 模型信心度：{detection.score:.1%}\n"
+                            f"- 類型性質：{'純文字 / 原始碼' if detection.is_text else '二進位資料'}"
+                        )
+                        return report, extra_meta
+                except Exception as e:
+                    logger.warning(f"inspect_file_type failed for {url}: {e}")
+                    return f"❌ 檔案檢測失敗: {sanitize_error_message(e)}", extra_meta
 
             else:
                 return f"未知工具: {name}", extra_meta

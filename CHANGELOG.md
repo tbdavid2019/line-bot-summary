@@ -7,7 +7,27 @@
 
 ## [Unreleased]
 
-## [2026-09-02]
+## [2026-09-08]
+### Added
+- **Google Magika AI 本地檔案類型深度辨識模組 ([`src/file_detector.py`](src/file_detector.py), [`requirements.txt`](requirements.txt))**：
+  - 導入 Google 官方深度學習檔案辨識工具 Magika (`magika>=0.6.2`)，Docker Build 時核心 ONNX 模型隨 Wheel 預先打包至映像檔，運行時 100% 本地離線推論（零連外 API 請求、零資料外洩、單次推論僅 ~5ms）。
+  - 採用線程安全之延遲單例模式 (Singleton Pattern) 與伺服器啟動預熱機制 (`warmup_file_detector`)，消除首次請求推論冷啟動延遲。
+  - 提供完整二進位 Bytes 與本地檔案路徑檢測 API (`detect_content_type`, `detect_content_type_bytes`)，支援輸出精確 MIME Type、標籤分類、分組、安全副檔名與 AI 信心度評分。
+  - 具備優雅降級 (Graceful Degradation) 防禦，套件異常時自動平滑回退至標準 `mimetypes`。
+- **LINE 多媒體訊息（語音、PDF/文件、圖片、二進位檔案）全端解析管線 ([`app.py`](app.py))**：
+  - Webhook 事件分派擴展支援 `file`、`audio`、`image`、`video` 等多媒體訊息類型，所有繁重下載與多模態分析皆在 `BackgroundTasks` 執行。
+  - **語音訊息 (Audio)**：使用者傳送 LINE 語音錄音檔時，自動下載並精準檢測格式，交由 Whisper / Gemini 音訊轉錄出逐字稿，並自動生成 5 段式結構化摘要，支援連續 5 次上下文深度追問。
+  - **文件與文字檔 (Document / Code / PDF)**：支援傳送 PDF、Markdown、文字檔、CSV 或原始碼，自動提取文字或透過 Gemini 原生多模態解構文件核心重點，並同步備份至 888box 雲端。
+  - **圖片解析 (Image)**：支援使用者傳送照片或截圖，自動上傳至 888box 物件儲存，並調用 Gemini 視覺模型深度解析圖片元素、OCR 文字與關鍵資訊。
+  - **一般檔案 (Binary / Archives)**：自動分析真實檔案簽章與屬性，輸出格式可信度診斷報告並提供 888box 安全下載連結。
+- **Agentic 工具擴充：`inspect_file_type` ([`src/agent_tools.py`](src/agent_tools.py))**：
+  - 在 `AGENT_TOOLS` 註冊檔案格式檢驗工具，讓 LLM 大腦在 ReAct 代理迴圈中可自主對任意遠端 URL 擷取檔案標頭樣品 (Range 0-16KB) 並分析其真實 MIME 類型與安全性質。
+- **整合測試套件 ([`test_magika_integration.py`](test_magika_integration.py))**：
+  - 建立 7 項自動化單元與整合測試，覆蓋模型預熱、圖像/代碼/PDF/音訊辨識、Agent 工具與 888box 整合流程。
+
+### Changed
+- **雲端物件儲存 Content-Type 自動修正強化 ([`src/box_storage.py`](src/box_storage.py))**：
+  - `upload_file` 與 `upload_bytes` 原先僅能依賴靜態副檔名字串猜測 MIME，全面升級為優先使用 Magika AI 模型對檔案與二進位 Bytes 取樣進行深層特徵推論，防止無副檔名或副檔名錯誤的檔案被錯誤標記為 `application/octet-stream`。
 ### Security & Hardening
 - **全方位資安審計與防禦體系強化 ([`src/security.py`](src/security.py), [`app.py`](app.py), [`src/box_storage.py`](src/box_storage.py), [`src/web_browser.py`](src/web_browser.py), [`src/agent_tools.py`](src/agent_tools.py), [`README.md`](README.md))**：
   - **SSRF 防護**：實裝 `is_safe_url()`，阻擋惡意 URL 存取 `127.0.0.1`、`169.254.169.254`（雲端 Metadata）與所有 RFC 1918 私有網段，防範內網穿透與實例憑證外洩。

@@ -50,6 +50,13 @@ from src.security import (
     BoundedSessionManager
 )
 
+# Google Magika AI 本地檔案類型辨識模組
+from src.file_detector import (
+    warmup_file_detector,
+    detect_content_type,
+    detect_content_type_bytes
+)
+
 # Google GenAI / GCS (選用備援)
 try:
     from google import genai as genai_v2
@@ -733,7 +740,8 @@ async def handle_message_event_async(event: Any):
                 "2. 🎥 **影音與網頁摘要**：直接傳送 YouTube、Bilibili、TikTok 影片或任意文章網址，自動轉錄並生成 5 段式結構化摘要。\n"
                 "3. 🎨 **AI 高品質生圖**：直接要求 `畫一張太空人坐在月球上看地球` 或 `!img 提示詞`，自動調用 Imagen/Gemini 生成圖片。\n"
                 "4. 📦 **888box 雲端儲存**：可查詢空間容量 (`!box` 或 `查詢雲端容量`) 或自動存檔。\n"
-                "5. 💬 **多輪上下文追問**：針對任何主題或網頁摘要內容，可連續深度追問 5 次！\n\n"
+                "5. 📁 **多媒體與文件解讀 (Google Magika AI 深度識別)**：直接傳送語音錄音、PDF、文字檔或圖片，本地即時辨識格式、語音轉逐字稿並提煉重點。\n"
+                "6. 💬 **多輪上下文追問**：針對任何主題或網頁摘要內容，可連續深度追問 5 次！\n\n"
                 "💡 *無需死記指令，直接輸入你想做的事即可！*"
             )
             await send_response_async(to_id, default_help, reply_token)
@@ -842,6 +850,215 @@ async def handle_message_event_async(event: Any):
         logger.error(f"Error handling event for {user_id}: {e}", exc_info=True)
         await send_response_async(to_id, f"⚠️ 處理請求時發生異常: {sanitize_error_message(e)}", reply_token)
 
+async def handle_media_event_async(event: Any):
+    """
+    背景非同步處理 LINE 多媒體與檔案訊息（語音、圖片、檔案、影片）。
+    運用 Google Magika 進行本地端 AI 格式特徵檢測，並銜接 Gemini 多模態與 888box 儲存。
+    """
+    if isinstance(event, dict):
+        source = event.get('source', {})
+        to_id = source.get('groupId') or source.get('roomId') or source.get('userId') or ''
+        user_id = source.get('userId') or to_id
+        msg_obj = event.get('message', {})
+        reply_token = event.get('replyToken')
+    else:
+        source = getattr(event, 'source', None)
+        to_id = getattr(source, 'group_id', None) or getattr(source, 'room_id', None) or getattr(source, 'user_id', '')
+        user_id = getattr(source, 'user_id', to_id)
+        raw_msg = getattr(event, 'message', None)
+        if hasattr(raw_msg, 'id'):
+            msg_obj = {
+                "id": getattr(raw_msg, "id", ""),
+                "type": getattr(raw_msg, "type", ""),
+                "fileName": getattr(raw_msg, "file_name", None),
+                "fileSize": getattr(raw_msg, "file_size", None)
+            }
+        else:
+            msg_obj = {}
+        reply_token = getattr(event, 'reply_token', None)
+
+    msg_id = msg_obj.get('id')
+    msg_type = msg_obj.get('type')
+    if not msg_id or not channel_access_token:
+        return
+
+    logger.info(f"Processing media message ({msg_type}, ID: {msg_id}) from {user_id}")
+    await show_loading_animation_async(to_id, 60)
+
+    try:
+        # 1. 從 LINE Data API 下載檔案二進位資料
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(
+                f"https://api-data.line.me/v2/bot/message/{msg_id}/content",
+                headers={"Authorization": f"Bearer {channel_access_token}"}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to download media content {msg_id}: HTTP {resp.status_code}")
+                await send_response_async(to_id, "⚠️ 無法自 LINE 伺服器取得多媒體檔案內容，請稍後重試。", reply_token)
+                return
+            content_bytes = resp.content
+
+        # 2. 透過 Google Magika 本地深度學習模型檢測真實格式
+        raw_name = msg_obj.get('fileName') or f"{msg_type}_{msg_id}"
+        detection = detect_content_type_bytes(content_bytes, filename_hint=raw_name)
+        ext = detection.primary_extension
+        clean_name = sanitize_filename(raw_name, default_prefix=msg_type)
+        if not any(clean_name.lower().endswith(e.lower()) for e in detection.extensions) and ext:
+            clean_name = f"{clean_name}{ext}"
+
+        logger.info(f"Magika detected content: {detection.mime_type} ({detection.label}), score: {detection.score:.2f}")
+
+        # 3. 根據格式特徵進行分流處理
+        # 分流 A: 語音/音訊 (Audio)
+        if detection.group == "audio" or msg_type == "audio":
+            tmp_audio = f"/tmp/{uuid.uuid4()}{ext}"
+            with open(tmp_audio, "wb") as f:
+                f.write(content_bytes)
+            try:
+                transcription = _sync_send_to_whisper(tmp_audio)
+                if transcription and transcription != "無法獲取音訊轉錄內容":
+                    system_prompt = get_summary_prompt()
+                    summary = await chain_response_async(system_prompt, transcription)
+                    full_reply = f"🎙️ 【語音轉錄與核心摘要】\n\n{summary}\n\n💡 原始格式：{detection.description} (`{detection.mime_type}`)"
+                    await send_response_async(to_id, full_reply, reply_token, quick_reply=get_summary_quick_reply())
+                    await session_manager.set(user_id, {
+                        "content": transcription,
+                        "title": "語音訊息",
+                        "summary": summary,
+                        "turn": 0,
+                        "remaining": MAX_FOLLOWUP_QUESTIONS
+                    })
+                    return
+                else:
+                    await send_response_async(to_id, f"⚠️ 語音未能成功辨識出清晰文字（檢測格式：{detection.description}）。", reply_token)
+                    return
+            finally:
+                if os.path.exists(tmp_audio):
+                    try:
+                        os.remove(tmp_audio)
+                    except Exception:
+                        pass
+
+        # 分流 B: 文件 / 文字類檔案 (PDF, TXT, Markdown, CSV, 程式碼)
+        elif detection.group in ["document", "code"] or detection.mime_type in ["application/pdf", "text/plain", "text/markdown", "text/csv"] or detection.is_text:
+            text_extracted = None
+            if detection.is_text:
+                for enc in ['utf-8', 'utf-16', 'big5', 'gbk']:
+                    try:
+                        text_extracted = content_bytes.decode(enc)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+
+            # 上傳 888box 備存
+            box_res = await upload_bytes_async(content_bytes, filename=clean_name, content_type=detection.mime_type, title=clean_name)
+            box_url = box_res.get("data", {}).get("url") or box_res.get("url") if box_res.get("result") == "success" else None
+
+            if text_extracted:
+                system_prompt = get_summary_prompt()
+                summary = await chain_response_async(system_prompt, text_extracted[:8000])
+                reply = f"📄 【文件深度解析與摘要：{clean_name}】\n\n{summary}"
+                if box_url:
+                    reply += f"\n\n📦 雲端備份存檔：{box_url}"
+                await send_response_async(to_id, reply, reply_token, quick_reply=get_summary_quick_reply())
+                await session_manager.set(user_id, {
+                    "content": text_extracted[:8000],
+                    "title": clean_name,
+                    "summary": summary,
+                    "turn": 0,
+                    "remaining": MAX_FOLLOWUP_QUESTIONS
+                })
+                return
+
+            if detection.mime_type == "application/pdf" and llm_api_key and genai_v2:
+                tmp_doc = f"/tmp/{uuid.uuid4()}{ext}"
+                with open(tmp_doc, "wb") as f:
+                    f.write(content_bytes)
+                try:
+                    client = genai_v2.Client(api_key=llm_api_key)
+                    uploaded_doc = client.files.upload(file=tmp_doc, mime_type=detection.mime_type)
+                    try:
+                        resp = client.models.generate_content(
+                            model=llm_model,
+                            contents=[
+                                uploaded_doc,
+                                "請依據此份 PDF 文件內容進行深入結構化重點摘要，條理分明繁體中文呈現關鍵細節："
+                            ]
+                        )
+                        summary = resp.text.strip() if resp.text else "無法讀取 PDF 內容。"
+                        reply = f"📑 【PDF 精華解讀：{clean_name}】\n\n{summary}"
+                        if box_url:
+                            reply += f"\n\n📦 雲端備份存檔：{box_url}"
+                        await send_response_async(to_id, reply, reply_token, quick_reply=get_summary_quick_reply())
+                        return
+                    finally:
+                        try:
+                            client.files.delete(name=uploaded_doc.name)
+                        except Exception:
+                            pass
+                finally:
+                    if os.path.exists(tmp_doc):
+                        try:
+                            os.remove(tmp_doc)
+                        except Exception:
+                            pass
+
+            reply = (
+                f"📦 【已接收文件：{clean_name}】\n"
+                f"🔍 Magika 深度辨識：{detection.description} (`{detection.mime_type}`)\n"
+                f"🎯 格式分組：{detection.group} (可信度 {detection.score:.1%})"
+            )
+            if box_url:
+                reply += f"\n🔗 雲端下載連結：{box_url}"
+            await send_response_async(to_id, reply, reply_token)
+            return
+
+        # 分流 C: 圖片 (Image)
+        elif detection.group == "image" or msg_type == "image":
+            box_res = await upload_bytes_async(content_bytes, filename=clean_name, content_type=detection.mime_type, title=clean_name)
+            box_url = box_res.get("data", {}).get("url") or box_res.get("url") if box_res.get("result") == "success" else None
+
+            if llm_api_key and genai_v2:
+                try:
+                    client = genai_v2.Client(api_key=llm_api_key)
+                    part = genai_types.Part.from_bytes(data=content_bytes, mime_type=detection.mime_type)
+                    resp = client.models.generate_content(
+                        model=llm_model,
+                        contents=[part, "請詳細分析這張圖片的畫面內容、主體元素、文字（若有）與關鍵資訊："]
+                    )
+                    desc = resp.text.strip() if resp.text else ""
+                    reply = f"🖼️ 【圖片內容深度解析】\n\n{desc}"
+                    if box_url:
+                        reply += f"\n\n📦 高畫質雲端存檔：{box_url}"
+                    await send_response_async(to_id, reply, reply_token)
+                    return
+                except Exception as e:
+                    logger.warning(f"Image analysis error: {e}")
+
+            reply = f"🖼️ 已接收圖片（{detection.description}，`{detection.mime_type}`）"
+            if box_url:
+                reply += f"\n📦 雲端存檔連結：{box_url}"
+            await send_response_async(to_id, reply, reply_token)
+            return
+
+        # 分流 D: 其他檔案 (Binary / Archives / Others)
+        else:
+            box_res = await upload_bytes_async(content_bytes, filename=clean_name, content_type=detection.mime_type, title=clean_name)
+            box_url = box_res.get("data", {}).get("url") or box_res.get("url") if box_res.get("result") == "success" else None
+            reply = (
+                f"📦 【已接收檔案：{clean_name}】\n"
+                f"🔍 Magika 深度辨識：{detection.description} (`{detection.mime_type}`)\n"
+                f"🎯 類型標籤：{detection.label} / {detection.group}\n"
+                f"📊 AI 信心度：{detection.score:.1%}"
+            )
+            if box_url:
+                reply += f"\n🔗 雲端下載連結：{box_url}"
+            await send_response_async(to_id, reply, reply_token)
+
+    except Exception as e:
+        logger.error(f"Media event handling error: {e}", exc_info=True)
+        await send_response_async(to_id, f"⚠️ 處理多媒體檔案時發生異常: {sanitize_error_message(e)}", reply_token)
+
 # ----------------------------------------------------------------------
 # FastAPI 路由端點
 # ----------------------------------------------------------------------
@@ -898,9 +1115,14 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
 
     # 3. 分派事件
     for event in events:
-        if event.get('type') == 'message' and event.get('message', {}).get('type') == 'text':
-            logger.info(f"Enqueuing message event: {event.get('webhookEventId') or 'event'}")
-            background_tasks.add_task(handle_message_event_async, event)
+        if event.get('type') == 'message':
+            m_type = event.get('message', {}).get('type')
+            if m_type == 'text':
+                logger.info(f"Enqueuing text message event: {event.get('webhookEventId') or 'event'}")
+                background_tasks.add_task(handle_message_event_async, event)
+            elif m_type in ['file', 'audio', 'image', 'video']:
+                logger.info(f"Enqueuing media message event ({m_type}): {event.get('webhookEventId') or 'event'}")
+                background_tasks.add_task(handle_media_event_async, event)
 
     # 迅速回傳 200 OK 給 LINE Webhook 伺服器
     return JSONResponse(content={"status": "ok"}, status_code=200)
@@ -928,6 +1150,11 @@ async def _periodic_ytdlp_update():
 
 @app.on_event("startup")
 async def on_startup():
+    # 預熱 Google Magika AI 本地檢測模型
+    try:
+        await asyncio.to_thread(warmup_file_detector)
+    except Exception as e:
+        logger.warning(f"Magika warmup on startup failed: {e}")
     asyncio.create_task(_periodic_ytdlp_update())
 
 if __name__ == "__main__":

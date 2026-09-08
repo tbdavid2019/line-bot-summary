@@ -65,8 +65,16 @@ LINE 示範機器人 小濃縮 👉👉  https://liff.line.me/1645278921-kWRPP32
   - 輸入 `!box`、`!stats` 或 `!空間` 即時查詢雲端儲存空間狀態與資產計數。
   - 輸入 `!img [提示詞]` 生成圖片並自動上傳至雲端儲存。
 
+### 📁 多模態檔案與多媒體解析 (Google Magika AI 本地深度辨識)
+- 🔬 **Google Magika 深度學習引擎**：整合 Google 官方 AI 檔案辨識庫 [`src/file_detector.py`](src/file_detector.py)，Docker Build 時核心 ONNX 模型隨 Wheel 自動打包內建於映像檔，運行時 100% 本地 CPU 離線推論（單次僅約 ~5ms），無外部網路連線依賴、零 API 成本、隱私資料零外洩。
+- 🎙️ **語音訊息轉錄與濃縮 (Audio)**：直接在 LINE 傳送語音訊息或錄音檔，系統自動精確辨識音訊格式、轉錄為文字逐字稿並產出 5 段式結構化摘要，同樣支援後續 5 次深入追問。
+- 📑 **文件與原始碼精讀 (Document / Code / PDF)**：直接上傳 PDF、Markdown、文字檔、CSV 或程式碼，AI 自動提取純文字或透過 Gemini 多模態深度解構文件重點，並自動備份至 888box 雲端。
+- 🖼️ **圖片深度視覺解析 (Image)**：使用者傳送照片或截圖，系統自動完成高畫質 888box 存檔，並調用 Gemini 視覺模型解析畫面主體、文字 OCR 與關鍵資訊。
+- 🏷️ **888box 儲存 Content-Type 自動校正**：檔案或二進位串流上傳時自動分析真實標頭特徵，擺脫副檔名遺失或猜測錯誤的問題。
+- 🛠️ **Agent 工具自主檢驗 (`inspect_file_type`)**：LLM 在 ReAct 迴圈中可自主取樣遠端網址檔案標頭 (0-16KB) 並分析其真實 MIME 格式與安全性質。
+
 ### ⏳ 即時回饋
-- 🔄 **Loading 動畫** - 處理網址時自動顯示載入動畫（最長 60 秒）
+- 🔄 **Loading 動畫** - 處理網址或多媒體時自動顯示載入動畫（最長 60 秒）
 - 💬 讓使用者知道系統正在處理中，提升使用體驗
 
 ## 🧠 對話狀態與 Session 記憶機制 (Know-How)
@@ -323,10 +331,11 @@ python app.py
    - 傳送新網址開始新對話
 
 ### 支援的輸入格式
-- ✅ YouTube: `https://youtube.com/watch?v=...`
-- ✅ Bilibili: `https://bilibili.com/video/...`
-- ✅ 一般網頁: `https://example.com/article`
-- ✅ 新聞網站: `https://news.example.com/...`
+- ✅ 影音網址: YouTube, Bilibili, TikTok, Vimeo 等 1000+ 平台
+- ✅ 網頁文章: 一般網頁、新聞網站、技術部落格
+- ✅ 語音訊息: LINE 語音備忘錄、音訊錄音（自動轉錄 + 摘要）
+- ✅ 文件檔案: PDF, TXT, Markdown, CSV, 程式碼（Magika 深度識別 + Gemini 摘要 + 888box 備存）
+- ✅ 圖片照片: 截圖、相片（Gemini 視覺深度解析 + 888box 高畫質存檔）
 
 ## 🔧 技術架構
 
